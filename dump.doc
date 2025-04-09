@@ -1,0 +1,10 @@
+ALL THE GOOD STUFF AND IN BETWEEN
+
+Refactor and enhance RAG pipeline: 
+- Updated configuration to include new API keys and parameters.
+- Implemented Gemini LLM service for improved text generation.
+- Added SharePoint and YouTube services for document loading.
+- Created document and transcription services for better content handling.
+- Established conversation history logging for user interactions.
+- Developed a comprehensive content retrieval and query processing pipeline.
+- Removed deprecated vector store and LLM service implementations.
