@@ -141,19 +141,21 @@
 #     } for doc in results]
 
 from flask import Blueprint, request, jsonify
-from services.llm_service import GeminiLLMService
+from services.llm_service import LLMService
 from services.document_service import DocumentService
 from services.vector_store import VectorStoreService
 from config.config import Config
 import logging
 
 api = Blueprint('rag_api', __name__)
-llm_service = GeminiLLMService()
-vector_service = VectorStoreService(
-    api_key=Config.PINECONE_API_KEY,
-    index_name=Config.PINECONE_INDEX_NAME,
-    embed_model=llm_service.get_embedding_model()
-)
+
+# Get the embedding model
+llm_service = LLMService()
+embed_model = llm_service.get_embedding_model()
+
+# Initialize the vector store service with config and model
+vector_service = VectorStoreService(config=Config, embed_model=embed_model)
+vector_store = vector_service.initialize_store()
 
 @api.route('/query', methods=['POST'])
 def handle_query():

@@ -12,7 +12,6 @@
 
 from typing import List
 from google.generativeai import configure, GenerativeModel, GenerationConfig
-from llama_index.llms.base.openai import Whisper
 from config.config import Config
 class LLMService:   
     

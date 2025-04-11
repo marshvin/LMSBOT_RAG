@@ -1,11 +1,11 @@
 from typing import List, Dict, Union
-from LMSBOT_RAG.services.google_slide import GoogleSlidesService
-from llama_index import Document
+# from services.google_slide import GoogleSlidesService
+from llama_index.core import Document
 from pydantic import BaseModel
 
 class ContentSource(BaseModel):
     id: str
-    type: str  # "youtube", "sharepoint", or "slides"
+    type: str  # "youtube" or "sharepoint"
     title: str
     url: str
     metadata: Dict
@@ -38,30 +38,30 @@ class DocumentService:
         
         return documents
 
-    @staticmethod
-    def create_from_slides(presentation: Dict) -> List[Document]:
-        """Create documents from slides content"""
-        documents = []
+    # @staticmethod
+    # def create_from_slides(presentation: Dict) -> List[Document]:
+    #     """Create documents from slides content"""
+    #     documents = []
         
-        for slide in presentation['slides']:
-            # Combine slide text and notes
-            full_text = f"Slide {slide['slide_number']}: {slide['text']}"
-            if slide['notes']:
-                full_text += f"\nNotes: {slide['notes']}"
+    #     for slide in presentation['slides']:
+    #         # Combine slide text and notes
+    #         full_text = f"Slide {slide['slide_number']}: {slide['text']}"
+    #         if slide['notes']:
+    #             full_text += f"\nNotes: {slide['notes']}"
             
-            documents.append(Document(
-                text=full_text,
-                metadata={
-                    'source_type': 'slides',
-                    'content_id': presentation['presentation_id'],
-                    'title': presentation['title'],
-                    'url': f"https://docs.google.com/presentation/d/{presentation['presentation_id']}",
-                    'slide_number': slide['slide_number'],
-                    'thumbnail_url': GoogleSlidesService().get_slide_thumbnail_url(
-                        presentation['presentation_id'],
-                        slide['slide_number']
-                    )
-                }
-            ))
+    #         documents.append(Document(
+    #             text=full_text,
+    #             metadata={
+    #                 'source_type': 'slides',
+    #                 'content_id': presentation['presentation_id'],
+    #                 'title': presentation['title'],
+    #                 'url': f"https://docs.google.com/presentation/d/{presentation['presentation_id']}",
+    #                 'slide_number': slide['slide_number'],
+    #                 'thumbnail_url': GoogleSlidesService().get_slide_thumbnail_url(
+    #                     presentation['presentation_id'],
+    #                     slide['slide_number']
+    #                 )
+    #             }
+    #         ))
         
-        return documents    
+    #     return documents    

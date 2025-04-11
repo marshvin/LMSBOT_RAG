@@ -17,9 +17,15 @@ class Config:
     PINECONE_INDEX_NAME = os.getenv('PINECONE_INDEX_NAME') 
     
     # SharePoint Configuration
+    SHAREPOINT_TENANT_ID = os.getenv("SHAREPOINT_TENANT_ID")
     SHAREPOINT_SITE_URL = os.getenv("SHAREPOINT_SITE_URL")
     SHAREPOINT_CLIENT_ID = os.getenv("SHAREPOINT_CLIENT_ID")
     SHAREPOINT_CLIENT_SECRET = os.getenv("SHAREPOINT_CLIENT_SECRET")
+    SHAREPOINT_FOLDER_PATH = os.getenv("SHAREPOINT_FOLDER_PATH")
+    
+    # Youtube Configuration
+    YOUTUBE_API_KEY= os.getenv("YOUTUBE_API_KEY")
+    YOUTUBE_CHANNEL_ID= os.getenv("YOUTUBE_CHANNEL_ID")
     
     # RDS Config
     RDS_DB_NAME= os.getenv('RDS_DB_NAME')
@@ -37,5 +43,10 @@ class Config:
     WHISPER_API_KEY = os.getenv("OPENAI_API_KEY")
     
     # RAG Parameters
-    RAG_TOP_K = 3  # Number of context chunks to retrieve
+    RAG_TOP_K = 3  
     MAX_CONTEXT_LENGTH = 4000  # Truncate context if needed
+    EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
+    EMBED_MODEL_TYPE = os.getenv("EMBED_MODEL_TYPE", "HuggingFaceEmbedding")
+
+    
+    # embed_model = HuggingFaceEmbedding(model_name="sentence-transformers/all-MiniLM-L6-v2")

@@ -1,21 +1,22 @@
 from config.config import Config
 from llama_index import VectorStoreIndex
 from llama_index.vector_stores import PineconeVectorStore
-from services.llm_service import GeminiLLMService
-from services.youtube_service import YouTubeDataService
+from services.llm_service import LLMService
+from services.youtube_service import YouTubeService
 from services.sharepoint_service import SharePointVideoService
-from services.slides_service import GoogleSlidesService
-from services.document_service import DocumentService
+# from services.slides_service import GoogleSlidesService
+# from services.document_service import DocumentService
 import pinecone
 from typing import List, Dict
 
 class ContentRagPipeline:
     def __init__(self):
+        
         # Initialize services
-        self.llm_service = GeminiLLMService()
-        self.youtube = YouTubeDataService(Config.YOUTUBE_API_KEY) if Config.YOUTUBE_API_KEY else None
+        self.llm_service = LLMService()
+        self.youtube = YouTubeService(Config.YOUTUBE_API_KEY) if Config.YOUTUBE_API_KEY else None
         self.sharepoint = SharePointVideoService() if Config.SHAREPOINT_CLIENT_ID else None
-        self.slides = GoogleSlidesService() if Config.GOOGLE_CREDENTIALS_FILE else None
+        # self.slides = GoogleSlidesService() if Config.GOOGLE_CREDENTIALS_FILE else None
         
         # Initialize vector store
         pinecone.init(
@@ -76,6 +77,6 @@ class ContentRagPipeline:
         """Generate source-specific links"""
         if metadata['source_type'] == "youtube":
             return f"{metadata['url']}?t={int(metadata['start_time'])}"
-        elif metadata['source_type'] == "slides":
-            return f"{metadata['url']}#slide=id.p{metadata['slide_number'] - 1}"
+        # elif metadata['source_type'] == "slides":
+        #     return f"{metadata['url']}#slide=id.p{metadata['slide_number'] - 1}"
         return metadata['url']

@@ -5,13 +5,13 @@ from config.config import Config
 
 from LMSBOT_RAG.services.vector_store import VectorStoreService
 from LMSBOT_RAG.services.history_service import ConversationHistoryService
-from LMSBOT_RAG.services.sharepoint_service import SharePointService
+from LMSBOT_RAG.services.sharepoint_service import SharePointVideoService
 from LMSBOT_RAG.services.transcription_service import WhisperTranscriptionService
 
 class TrainingPipeline:
     def __init__(self, config: Dict[str, Any]):
                
-        self.sharepoint = SharePointService(
+        self.sharepoint = SharePointVideoService(
             config["SHAREPOINT_SITE"],
             config["SHAREPOINT_USER"],
             config["SHAREPOINT_PASSWORD"]

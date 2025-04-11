@@ -1,6 +1,9 @@
 venv
 .env
 __pycache__/
+/*.py[cod]
+api/__pycache__/
+api/*.py[cod]
 *.pyc
 *.pyo
 *.pyd
@@ -36,4 +39,6 @@ __pycache__/
 *.dist-info/
 *.whl
 *.dist-info
+.pytest_cache/
+*.coverage
 
