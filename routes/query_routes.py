@@ -1,11 +1,15 @@
 # routes/query_routes.py
 from flask import Blueprint, request, jsonify, current_app
+from uuid import uuid4
 
 query_bp = Blueprint('query', __name__, url_prefix='/api')
 
+# In-memory storage for conversations (in production, use a proper database)
+conversations = {}
+
 @query_bp.route('/query', methods=['POST'])
 def query():
-    """Query endpoint for RAG responses"""
+    """Query endpoint for RAG responses with conversation memory"""
     components = current_app.config['COMPONENTS']
     rag_engine = components['rag_engine']
     
@@ -17,47 +21,36 @@ def query():
         }), 400
     
     query_text = data['query']
-    top_k = data.get('top_k', 5)  # Default to 5 if not provided
+    conversation_id = data.get('conversation_id')
+    
+    # Create new conversation if no ID provided
+    if not conversation_id:
+        conversation_id = str(uuid4())
+        conversations[conversation_id] = []
+    
+    # Get conversation history
+    conversation_history = conversations.get(conversation_id, [])
     
     try:
-        response = rag_engine.answer_query(query_text, top_k=top_k)
+        # Get response using conversation history
+        response = rag_engine.answer_query(
+            query_text,
+            context=conversation_history
+        )
+        
+        # Update conversation history
+        conversation_history.extend([
+            {"role": "user", "content": query_text},
+            {"role": "assistant", "content": response}
+        ])
+        conversations[conversation_id] = conversation_history[-10:]  # Keep last 10 messages
         
         return jsonify({
             "query": query_text,
-            "response": response
+            "response": response,
+            "conversation_id": conversation_id
         })
     except Exception as e:
         return jsonify({
             "error": f"Error processing query: {str(e)}"
-        }), 500
-
-@query_bp.route('/chat', methods=['POST'])
-def chat():
-    """Chat endpoint with history tracking"""
-    components = current_app.config['COMPONENTS']
-    rag_engine = components['rag_engine']
-    
-    data = request.json
-    
-    if not data or 'message' not in data:
-        return jsonify({
-            "error": "Missing 'message' parameter"
-        }), 400
-    
-    message = data['message']
-    session_id = data.get('session_id', 'default')
-    
-    # In a real implementation, you would store chat history in a database or cache
-    
-    try:
-        response = rag_engine.answer_query(message)
-        
-        return jsonify({
-            "message": message,
-            "response": response,
-            "session_id": session_id
-        })
-    except Exception as e:
-        return jsonify({
-            "error": f"Error processing message: {str(e)}"
         }), 500

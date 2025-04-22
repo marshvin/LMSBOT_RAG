@@ -1,5 +1,6 @@
 # app.py
 from flask import Flask
+from flask_cors import CORS
 import os
 from dotenv import load_dotenv
 
@@ -50,6 +51,15 @@ def init_components():
 # Create and configure app
 def create_app():
     app = Flask(__name__)
+    
+    # Enable CORS for all routes
+    CORS(app, resources={
+        r"/api/*": {
+            "origins": ["http://localhost:3000"],
+            "methods": ["GET", "POST", "OPTIONS"],
+            "allow_headers": ["Content-Type"]
+        }
+    })
     
     # Initialize components
     components = init_components()
