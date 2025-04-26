@@ -52,12 +52,15 @@ def init_components():
 def create_app():
     app = Flask(__name__)
     
+    # Get allowed origins from environment or use defaults
+    allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,https://lmsbot-frontend.vercel.app").split(",")
+    
     # Enable CORS for all routes
     CORS(app, resources={
         r"/api/*": {
-            "origins": ["http://localhost:3000", "https://lmsbot-frontend.vercel.app/"],
+            "origins": allowed_origins,
             "methods": ["GET", "POST", "OPTIONS"],
-            "allow_headers": ["Content-Type"]
+            "allow_headers": ["Content-Type", "Authorization"]
         }
     })
     
