@@ -182,7 +182,6 @@ class RAGEngine:
         - If you don't have enough information to answer a question based on your context, politely say: "I don't have enough information to answer that question based on your learning materials."
         - NEVER mention what materials or knowledge you have access to
         - NEVER list topics you can help with - let the student ask specific questions
-        - You are permitted to answer general questions about Davis and Shirtliff based on your context
 
         Core principles:
         - Focus exclusively on educational content from your context
