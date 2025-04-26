@@ -49,41 +49,33 @@ def init_components():
     }
 
 # Create and configure app
-def create_app():
-    app = Flask(__name__)
-    
-    # Get allowed origins from environment or use defaults
-    allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,https://lmsbot-frontend.vercel.app").split(",")
-    
-    # Enable CORS for all routes
-    CORS(app, resources={
-        r"/api/*": {
-            "origins": allowed_origins,
-            "methods": ["GET", "POST", "OPTIONS"],
-            "allow_headers": ["Content-Type", "Authorization"]
-        }
-    })
-    
-    # Initialize components
-    components = init_components()
-    
-    # Register routes
-    from routes.health_routes import health_bp
-    from routes.document_routes import document_bp
-    from routes.query_routes import query_bp
-    from routes.youtube_routes import youtube_bp
-    
-    # Register blueprints
-    app.register_blueprint(health_bp)
-    app.register_blueprint(document_bp)
-    app.register_blueprint(query_bp)
-    app.register_blueprint(youtube_bp)
-    
-    # Add components to app context
-    app.config['COMPONENTS'] = components
-    
-    return app
+app = Flask(__name__)
 
+# Get allowed origins from environment or use defaults
+allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,https://lmsbot-frontend.vercel.app").split(",")
+
+# Enable simple CORS for all routes
+CORS(app, origins=allowed_origins)
+
+# Initialize components
+components = init_components()
+
+# Register routes
+from routes.health_routes import health_bp
+from routes.document_routes import document_bp
+from routes.query_routes import query_bp
+from routes.youtube_routes import youtube_bp
+
+# Register blueprints
+app.register_blueprint(health_bp)
+app.register_blueprint(document_bp)
+app.register_blueprint(query_bp)
+app.register_blueprint(youtube_bp)
+
+# Add components to app context
+app.config['COMPONENTS'] = components
+
+# This simplifies deployment - the app can be directly run by Render
 if __name__ == '__main__':
-    app = create_app()
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    port = int(os.getenv("PORT", 5000))
+    app.run(debug=False, host='0.0.0.0', port=port)
