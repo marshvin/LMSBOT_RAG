@@ -55,7 +55,7 @@ def create_app():
     # Enable CORS for all routes
     CORS(app, resources={
         r"/api/*": {
-            "origins": ["http://localhost:3000"],
+            "origins": ["http://localhost:3000", "https://lmsbot-frontend.vercel.app/"],
             "methods": ["GET", "POST", "OPTIONS"],
             "allow_headers": ["Content-Type"]
         }
