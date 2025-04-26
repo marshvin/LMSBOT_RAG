@@ -92,3 +92,50 @@ def query():
             "conversation_id": data.get('conversation_id', str(uuid4())),
             "error": "Internal server error"
         }), 500
+
+@query_bp.route('/clear-cache', methods=['POST'])
+def clear_cache():
+    """Clear all cache data including conversations and embeddings"""
+    try:
+        # Clear conversations
+        conversations.clear()
+        
+        # Clear embedding cache in RAG engine
+        components = current_app.config['COMPONENTS']
+        rag_engine = components['rag_engine']
+        
+        if hasattr(rag_engine, '_embedding_cache'):
+            rag_engine._embedding_cache.clear()
+        
+        return jsonify({
+            "status": "success",
+            "message": "All caches cleared successfully"
+        })
+    except Exception as e:
+        print(f"Error clearing cache: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": f"Error clearing cache: {str(e)}"
+        }), 500
+
+@query_bp.route('/clear-conversation/<conversation_id>', methods=['POST'])
+def clear_conversation(conversation_id):
+    """Clear a specific conversation from the cache"""
+    try:
+        if conversation_id in conversations:
+            del conversations[conversation_id]
+            return jsonify({
+                "status": "success",
+                "message": f"Conversation {conversation_id} cleared successfully"
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": f"Conversation ID {conversation_id} not found"
+            }), 404
+    except Exception as e:
+        print(f"Error clearing conversation: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": f"Error clearing conversation: {str(e)}"
+        }), 500
