@@ -3,18 +3,22 @@ import google.generativeai as genai
 from typing import List, Dict, Any, Optional
 import time
 import re
+import gc
 
 class RAGEngine:
-    def __init__(self, embedding_service, vector_store, llm_api_key):
+    def __init__(self, embedding_service, vector_store, llm_api_key, use_cache=False):
         self.embedding_service = embedding_service
         self.vector_store = vector_store
         
         # Initialize Gemini API
         genai.configure(api_key=llm_api_key)
-        self.model = genai.GenerativeModel('gemini-1.5-pro')
+        # Don't store the model - create it when needed
+        self.llm_api_key = llm_api_key
         
-        # Cache for embeddings to reduce API calls
-        self._embedding_cache = {}
+        # Cache for embeddings - only used if use_cache is True
+        self._embedding_cache = {} if use_cache else None
+        self._max_cache_entries = 10  # Further reduced from 20
+        self._use_cache = use_cache
         
         # Default generation config with timeouts
         self.generation_config = {
@@ -38,15 +42,17 @@ class RAGEngine:
             if self._is_greeting(query) and not context:
                 return "Hi there! I'm your Learning Assistant, ready to help with your course. What would you like to learn today?"
             
-            # Generate embedding for the query - use cache if available
-            if query in self._embedding_cache:
+            # Generate embedding for the query - use cache if enabled and available
+            query_embedding = None
+            if self._use_cache and self._embedding_cache is not None and query in self._embedding_cache:
                 query_embedding = self._embedding_cache[query]
             else:
                 query_embedding = self.embedding_service.get_embedding(query)
-                # Cache the embedding (limit cache size)
-                if len(self._embedding_cache) > 100:
-                    self._embedding_cache.clear()
-                self._embedding_cache[query] = query_embedding
+                # Cache the embedding if caching is enabled
+                if self._use_cache and self._embedding_cache is not None:
+                    if len(self._embedding_cache) > self._max_cache_entries:
+                        self._embedding_cache.clear()
+                    self._embedding_cache[query] = query_embedding
             
             # Add timeout for vector store query
             start_time = time.time()
@@ -62,16 +68,19 @@ class RAGEngine:
                 if 'text' in match['metadata']:
                     text = match['metadata']['text']
                     # Limit text length to reduce memory usage
-                    if len(text) > 1000:
-                        text = text[:1000] + "..."
+                    if len(text) > 500:  # Reduced from 1000
+                        text = text[:500] + "..."
                     doc_contexts.append(text)
             
             # Create a prompt with the retrieved context and conversation history
             prompt = self._create_prompt(query, doc_contexts, context)
             
+            # Initialize model just when needed
+            model = genai.GenerativeModel('gemini-1.5-pro')
+            
             # Generate response using LLM with timeout
             start_time = time.time()
-            response = self.model.generate_content(
+            response = model.generate_content(
                 prompt, 
                 generation_config=self.generation_config,
                 safety_settings=[
@@ -86,11 +95,21 @@ class RAGEngine:
             if time.time() - start_time > 20:
                 return "I apologize, but processing your question took too long. Could you try a simpler question?"
             
+            # Clean up to save memory
+            del prompt
+            del model
+            gc.collect()
+            
             return response.text
             
         except Exception as e:
             # Return a friendly error message
             return f"I'm sorry, I encountered an error while processing your question. Please try again with a different question. If this persists, please contact support."
+    
+    def clear_cache(self):
+        """Clear the embedding cache if it exists"""
+        if self._embedding_cache is not None:
+            self._embedding_cache.clear()
     
     def _is_greeting(self, text: str) -> bool:
         """
@@ -134,28 +153,26 @@ class RAGEngine:
             
         doc_context_str = "\n\n".join([f"{context}" for i, context in enumerate(doc_contexts)])
         
-        # Format conversation history if available - limit to last 3 messages
+        # Format conversation history if available - limit to last 2 messages to save memory
         conv_history = ""
         if conv_context:
-            # Only keep most recent messages
-            recent_messages = conv_context[-3:] if len(conv_context) > 3 else conv_context
+            # Only keep most recent messages - reduced from 3 to 2
+            recent_messages = conv_context[-2:] if len(conv_context) > 2 else conv_context
             conv_history = "\nPrevious conversation:\n"
             for msg in recent_messages:
-                role = msg["role"].capitalize()
-                # Truncate content to reduce token usage
-                content = msg["content"]
-                if len(content) > 200:
-                    content = content[:200] + "..."
+                role = msg["role"].capitalize() if "role" in msg else "Unknown"
+                # Truncate content to reduce token usage - reduced from 200 to 150
+                content = msg.get("content", "")
+                if content and len(content) > 150:
+                    content = content[:150] + "..."
                 conv_history += f"{role}: {content}\n"
         
+        # Simplified prompt to save tokens
         prompt = f"""
         You are a dedicated Learning Assistant, committed to helping students excel in their educational journey. Your purpose is to:
 
         1. Guide students through their academic challenges
         2. Explain concepts clearly and comprehensively
-        3. Help students understand complex topics
-        4. Provide relevant examples and practice problems
-        5. Foster critical thinking and deep understanding
 
         STRICT LIMITATIONS:
         - You can ONLY answer questions directly related to the provided context materials
@@ -170,11 +187,7 @@ class RAGEngine:
         Core principles:
         - Focus exclusively on educational content from your context
         - Use clear, student-friendly language
-        - Provide structured, easy-to-follow explanations
-        - Encourage active learning and engagement
-        - Maintain a supportive and patient teaching approach
         - Keep responses focused on ONLY what the student is asking about
-        - When greeting a new student, simply introduce yourself as a Learning Assistant who can help with their course
 
         {conv_history}
         Student: {query}

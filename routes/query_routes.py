@@ -2,20 +2,21 @@
 from flask import Blueprint, request, jsonify, current_app
 from uuid import uuid4
 import time
+import gc
 
 query_bp = Blueprint('query', __name__, url_prefix='/api')
 
-# In-memory storage for conversations (in production, use a proper database)
-conversations = {}
+# Stateless implementation - no in-memory cache
 
 @query_bp.route('/query', methods=['POST'])
 def query():
-    """Query endpoint for RAG responses with conversation memory"""
+    """Query endpoint for RAG responses without conversation memory"""
     start_time = time.time()
     
     try:
-        components = current_app.config['COMPONENTS']
-        rag_engine = components['rag_engine']
+        # Lazy load RAG engine only when needed
+        get_component = current_app.config['GET_COMPONENT']
+        rag_engine = get_component("rag_engine")
         
         data = request.json
         
@@ -32,20 +33,22 @@ def query():
                 "error": "Query cannot be empty"
             }), 400
             
-        if len(query_text) > 1000:
+        # Limit query length more strictly
+        if len(query_text) > 500:  # Reduced from 1000
             return jsonify({
-                "error": "Query too long (max 1000 characters)"
+                "error": "Query too long (max 500 characters)"
             }), 400
         
-        conversation_id = data.get('conversation_id')
+        # Generate a unique ID for this query
+        conversation_id = str(uuid4())
         
-        # Create new conversation if no ID provided
-        if not conversation_id:
-            conversation_id = str(uuid4())
-            conversations[conversation_id] = []
+        # Use empty context - no conversation history
+        context = []
         
-        # Get conversation history
-        conversation_history = conversations.get(conversation_id, [])
+        # For stateful behavior, client should include previous messages in request
+        if data.get('previous_messages') and isinstance(data.get('previous_messages'), list):
+            # Limit to max 3 messages from client to prevent memory issues
+            context = data['previous_messages'][:3]
         
         # Add timeout check
         if time.time() - start_time > 25:
@@ -55,28 +58,14 @@ def query():
                 "conversation_id": conversation_id
             })
         
-        # Get response using conversation history
+        # Get response (without conversation history by default)
         response = rag_engine.answer_query(
             query_text,
-            context=conversation_history
+            context=context
         )
         
-        # Add timeout check before updating history
-        if time.time() - start_time > 28:
-            return jsonify({
-                "query": query_text,
-                "response": "Request processing took too long. Please try again with a shorter query.",
-                "conversation_id": conversation_id
-            })
-        
-        # Update conversation history
-        conversation_history.extend([
-            {"role": "user", "content": query_text},
-            {"role": "assistant", "content": response}
-        ])
-        
-        # Limit conversation history to last 10 messages
-        conversations[conversation_id] = conversation_history[-10:]
+        # Force garbage collection to free memory
+        gc.collect()
         
         return jsonify({
             "query": query_text,
@@ -89,53 +78,31 @@ def query():
         return jsonify({
             "query": data.get('query', ''),
             "response": "I'm sorry, I encountered an error while processing your question. Please try again.",
-            "conversation_id": data.get('conversation_id', str(uuid4())),
+            "conversation_id": str(uuid4()),
             "error": "Internal server error"
         }), 500
 
 @query_bp.route('/clear-cache', methods=['POST'])
 def clear_cache():
-    """Clear all cache data including conversations and embeddings"""
+    """Clear all caches (embedding cache in RAG engine)"""
     try:
-        # Clear conversations
-        conversations.clear()
-        
-        # Clear embedding cache in RAG engine
+        # Clear embedding cache in RAG engine if it exists
         components = current_app.config['COMPONENTS']
-        rag_engine = components['rag_engine']
+        if "rag_engine" in components:
+            rag_engine = components["rag_engine"]
+            if hasattr(rag_engine, '_embedding_cache'):
+                rag_engine._embedding_cache.clear()
         
-        if hasattr(rag_engine, '_embedding_cache'):
-            rag_engine._embedding_cache.clear()
+        # Force garbage collection
+        gc.collect()
         
         return jsonify({
             "status": "success",
-            "message": "All caches cleared successfully"
+            "message": "Cache cleared successfully"
         })
     except Exception as e:
         print(f"Error clearing cache: {str(e)}")
         return jsonify({
             "status": "error",
             "message": f"Error clearing cache: {str(e)}"
-        }), 500
-
-@query_bp.route('/clear-conversation/<conversation_id>', methods=['POST'])
-def clear_conversation(conversation_id):
-    """Clear a specific conversation from the cache"""
-    try:
-        if conversation_id in conversations:
-            del conversations[conversation_id]
-            return jsonify({
-                "status": "success",
-                "message": f"Conversation {conversation_id} cleared successfully"
-            })
-        else:
-            return jsonify({
-                "status": "error",
-                "message": f"Conversation ID {conversation_id} not found"
-            }), 404
-    except Exception as e:
-        print(f"Error clearing conversation: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": f"Error clearing conversation: {str(e)}"
         }), 500

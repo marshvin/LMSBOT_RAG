@@ -1,6 +1,7 @@
 # routes/document_routes.py
 from flask import Blueprint, request, jsonify, current_app
 import os
+import gc
 from rag_components.pdf_loader import PDFLoader  # Add this import
 
 document_bp = Blueprint('document', __name__, url_prefix='/api')
@@ -8,8 +9,9 @@ document_bp = Blueprint('document', __name__, url_prefix='/api')
 @document_bp.route('/documents', methods=['POST'])
 def add_document():
     """Add a document to the RAG system"""
-    components = current_app.config['COMPONENTS']
-    document_processor = components['document_processor']
+    # Lazy load document processor
+    get_component = current_app.config['GET_COMPONENT']
+    document_processor = get_component("document_processor")
     
     data = request.json
     
@@ -24,6 +26,9 @@ def add_document():
     try:
         doc_id = document_processor.process_document(document_text, metadata)
         
+        # Run garbage collection
+        gc.collect()
+        
         return jsonify({
             "message": "Document added successfully",
             "document_id": doc_id
@@ -36,12 +41,16 @@ def add_document():
 @document_bp.route('/documents/<doc_id>', methods=['DELETE'])
 def delete_document(doc_id):
     """Delete a document from the RAG system"""
-    components = current_app.config['COMPONENTS']
-    pinecone_client = components['pinecone_client']
+    # Lazy load pinecone client
+    get_component = current_app.config['GET_COMPONENT']
+    pinecone_client = get_component("pinecone_client")
     
     try:
         # Delete the document by ID
         pinecone_client.delete(ids=[f"{doc_id}_*"])
+        
+        # Run garbage collection
+        gc.collect()
         
         return jsonify({
             "message": f"Document {doc_id} deleted successfully"
@@ -64,6 +73,11 @@ def upload_pdf():
     if not file.filename.endswith('.pdf'):
         return jsonify({"error": "File must be a PDF"}), 400
     
+    # Limit PDF size
+    MAX_PDF_SIZE = 5 * 1024 * 1024  # 5MB
+    if file.content_length and file.content_length > MAX_PDF_SIZE:
+        return jsonify({"error": "PDF file too large (max 5MB)"}), 400
+    
     # Save the file temporarily
     temp_path = f"temp_{file.filename}"
     try:
@@ -74,13 +88,16 @@ def upload_pdf():
         document = pdf_loader.load_document(temp_path)
         
         # Process through RAG system
-        components = current_app.config['COMPONENTS']
-        document_processor = components['document_processor']
+        get_component = current_app.config['GET_COMPONENT']
+        document_processor = get_component("document_processor")
         
         doc_id = document_processor.process_document(
             text=document["text"],
             metadata=document["metadata"]
         )
+        
+        # Run garbage collection
+        gc.collect()
         
         return jsonify({
             "message": "PDF processed successfully",

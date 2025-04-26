@@ -1,14 +1,16 @@
 # routes/youtube_routes.py
 from flask import Blueprint, request, jsonify, current_app
+import gc
 
 youtube_bp = Blueprint('youtube', __name__, url_prefix='/api')
 
 @youtube_bp.route('/youtube/load', methods=['POST'])
 def load_youtube():
     """Load videos from YouTube channel"""
-    components = current_app.config['COMPONENTS']
-    youtube_loader = components['youtube_loader']
-    document_processor = components['document_processor']
+    # Lazy load components when needed
+    get_component = current_app.config['GET_COMPONENT']
+    youtube_loader = get_component("youtube_loader")
+    document_processor = get_component("document_processor")
     
     data = request.json
     
@@ -17,10 +19,14 @@ def load_youtube():
         youtube_loader.channel_id = data['channel_id']
     
     if data and 'max_videos' in data:
-        youtube_loader.max_videos = data['max_videos']
+        # Limit max videos for memory reasons
+        youtube_loader.max_videos = min(data.get('max_videos', 20), 20)  # Max 20 videos
     
     try:
         processed_ids = youtube_loader.load_and_process(document_processor)
+        
+        # Run garbage collection
+        gc.collect()
         
         return jsonify({
             "message": f"Processed {len(processed_ids)} videos",
