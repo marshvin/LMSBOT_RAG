@@ -2,6 +2,7 @@
 import google.generativeai as genai
 from typing import List, Dict, Any, Optional
 import time
+import re
 
 class RAGEngine:
     def __init__(self, embedding_service, vector_store, llm_api_key):
@@ -33,6 +34,10 @@ class RAGEngine:
             top_k: Number of relevant documents to retrieve
         """
         try:
+            # Check if this is a greeting without specific question
+            if self._is_greeting(query) and not context:
+                return "Hi there! I'm your Learning Assistant, ready to help with your course. What would you like to learn today?"
+            
             # Generate embedding for the query - use cache if available
             if query in self._embedding_cache:
                 query_embedding = self._embedding_cache[query]
@@ -87,6 +92,32 @@ class RAGEngine:
             # Return a friendly error message
             return f"I'm sorry, I encountered an error while processing your question. Please try again with a different question. If this persists, please contact support."
     
+    def _is_greeting(self, text: str) -> bool:
+        """
+        Check if the message is just a greeting without any specific question
+        """
+        text = text.lower().strip()
+        greetings = [
+            r'\bhello\b', r'\bhi\b', r'\bhey\b', r'\bgreetings\b', 
+            r'\bgood morning\b', r'\bgood afternoon\b', r'\bgood evening\b',
+            r'\bhowdy\b', r'\bola\b', r'\bwhat\'s up\b', r'\byo\b'
+        ]
+        
+        # Check if the message contains only greetings
+        if any(re.search(pattern, text) for pattern in greetings):
+            # Check if the message is short (likely just a greeting)
+            if len(text.split()) < 5:
+                return True
+            
+            # Check if there's a question mark (indicating an actual question)
+            if '?' not in text:
+                # Look for question keywords
+                question_words = ['what', 'why', 'how', 'when', 'where', 'who', 'which', 'can you', 'could you', 'explain']
+                # If none of the question words are present, it's likely just a greeting
+                return not any(word in text for word in question_words)
+        
+        return False
+    
     def _create_prompt(self, query: str, doc_contexts: List[str], conv_context: Optional[List[Dict[str, str]]] = None) -> str:
         """
         Create a prompt using the query, retrieved contexts, and conversation history
@@ -133,13 +164,18 @@ class RAGEngine:
         - Encourage active learning and engagement
         - Maintain a supportive and patient teaching approach
         - Politely decline non-academic questions
+        - NEVER mention specific subject areas unless the student asks about them first
+        - DO NOT list or mention what information you have access to
+        - Keep responses focused on ONLY what the student is asking about
+        - When greeting a new student, simply introduce yourself as a Learning Assistant who can help with their course
+        - You are allowed to answer general questions about Davis and Shirtliff
 
         {conv_history}
         Student: {query}
 
         Assistant: 
 
-        [Use this knowledge to help: {doc_context_str}]
+        [Use this knowledge to help without explicitly mentioning you're drawing from specific materials: {doc_context_str}]
         """
         
         return prompt
