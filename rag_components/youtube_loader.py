@@ -2,7 +2,7 @@
 import os
 import requests
 from youtube_transcript_api import YouTubeTranscriptApi
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 class YouTubeLoader:
     def __init__(self, api_key: str, channel_id: str, max_videos: int = 20):
@@ -50,8 +50,17 @@ class YouTubeLoader:
             print(f"Error fetching transcript for video {video_id}: {str(e)}")
             return ""
     
-    def load_and_process(self, document_processor) -> List[str]:
-        """Load videos from channel and process them into the RAG system"""
+    def load_and_process(self, document_processor, course: str) -> List[str]:
+        """
+        Load videos from channel and process them into the RAG system
+        
+        Args:
+            document_processor: The document processor component
+            course: Course identifier to associate with these videos
+        """
+        if not course:
+            raise ValueError("Course information is required for processing YouTube videos")
+            
         videos = self.fetch_channel_videos()
         processed_ids = []
         
@@ -62,11 +71,13 @@ class YouTubeLoader:
                     "source": "youtube",
                     "video_id": video['video_id'],
                     "title": video['title'],
-                    "description": video['description']
+                    "description": video['description'],
+                    "doc_name": video['title'],
+                    "course": course
                 }
                 
                 doc_id = document_processor.process_document(transcript, metadata)
                 processed_ids.append(doc_id)
-                print(f"Processed video: {video['title']}")
+                print(f"Processed video: {video['title']} for course: {course}")
         
         return processed_ids

@@ -28,19 +28,27 @@ class RAGEngine:
             "top_k": 40
         }
     
-    def answer_query(self, query: str, context: Optional[List[Dict[str, str]]] = None, top_k: int = 3) -> str:
+    def answer_query(self, query: str, course: Optional[str] = None, context: Optional[List[Dict[str, str]]] = None, top_k: int = 3) -> str:
         """
-        Answer a query using RAG technique with optional conversation history
+        Answer a query using RAG technique with optional conversation history and course filtering
         
         Args:
             query: The user's question
+            course: Optional course ID/name to filter results by
             context: Optional list of previous conversation messages
             top_k: Number of relevant documents to retrieve
         """
         try:
+            # Check if the query is specifically about the course
+            query_lower = query.lower().strip()
+            is_course_query = any(phrase in query_lower for phrase in ["this course", "the course", "course content", "about course"])
+            
             # Check if this is a greeting without specific question
             if self._is_greeting(query) and not context:
-                return "Hi there! I'm your Learning Assistant, ready to help with your course. What would you like to learn today?"
+                if course:
+                    return f"Hi there! I'm your Learning Assistant for {course}. What would you like to learn today?"
+                else:
+                    return "Hi there! I'm your Learning Assistant, ready to help with your course. What would you like to learn today?"
             
             # Generate embedding for the query - use cache if enabled and available
             query_embedding = None
@@ -54,9 +62,40 @@ class RAGEngine:
                         self._embedding_cache.clear()
                     self._embedding_cache[query] = query_embedding
             
+            # Create filter for course if provided
+            filter_params = None
+            if course:
+                filter_params = {"course": course}
+            
             # Add timeout for vector store query
             start_time = time.time()
-            results = self.vector_store.query(vector=query_embedding, top_k=top_k)
+            results = self.vector_store.query(
+                vector=query_embedding, 
+                top_k=top_k,
+                filter_params=filter_params
+            )
+            
+            # For course-specific queries, don't do global fallback search
+            should_fallback = not is_course_query
+            
+            # If no results and course filter was applied, try global search only for non-course-specific queries
+            if not results['matches'] and course and should_fallback:
+                # First check if any documents exist for this course
+                course_check = self.vector_store.query(
+                    vector=query_embedding, 
+                    top_k=1,
+                    filter_params={"course": course}
+                )
+                
+                # If the course has no documents at all, inform the user
+                if not course_check['matches']:
+                    return f"The course '{course}' doesn't have any materials available yet. Please check back later when content has been added."
+                
+                # Otherwise, try a global search for non-course-specific queries
+                results = self.vector_store.query(vector=query_embedding, top_k=top_k)
+                if results['matches']:
+                    # Prepend a note about looking outside the course
+                    query = f"[Note: Searching beyond {course} materials] {query}"
             
             # Limit processing time
             if time.time() - start_time > 10:
@@ -67,13 +106,30 @@ class RAGEngine:
             for match in results['matches']:
                 if 'text' in match['metadata']:
                     text = match['metadata']['text']
+                    # Add source metadata if available
+                    if 'doc_name' in match['metadata']:
+                        source_info = f"Source: {match['metadata']['doc_name']}"
+                        if 'course' in match['metadata']:
+                            source_info += f" ({match['metadata']['course']})"
+                        text = f"{text}\n[{source_info}]"
+                    
                     # Limit text length to reduce memory usage
                     if len(text) > 500:  # Reduced from 1000
                         text = text[:500] + "..."
                     doc_contexts.append(text)
             
+            # If no contexts found, inform the user
+            if not doc_contexts:
+                if course:
+                    if is_course_query:
+                        return f"I don't have specific information about the course '{course}' yet. Please check with your instructor for course details."
+                    else:
+                        return f"I couldn't find any relevant information for your question in the {course} course materials. Could you try rephrasing your question or asking about a different topic?"
+                else:
+                    return "I couldn't find any relevant information for your question in our learning materials. Could you try rephrasing your question or asking about a different topic?"
+            
             # Create a prompt with the retrieved context and conversation history
-            prompt = self._create_prompt(query, doc_contexts, context)
+            prompt = self._create_prompt(query, doc_contexts, context, course)
             
             # Initialize model just when needed
             model = genai.GenerativeModel('gemini-1.5-pro')
@@ -137,7 +193,7 @@ class RAGEngine:
         
         return False
     
-    def _create_prompt(self, query: str, doc_contexts: List[str], conv_context: Optional[List[Dict[str, str]]] = None) -> str:
+    def _create_prompt(self, query: str, doc_contexts: List[str], conv_context: Optional[List[Dict[str, str]]] = None, course: Optional[str] = None) -> str:
         """
         Create a prompt using the query, retrieved contexts, and conversation history
         
@@ -145,6 +201,7 @@ class RAGEngine:
             query: The user's question
             doc_contexts: List of relevant document contexts
             conv_context: Optional list of previous conversation messages
+            course: Optional course identifier for context
         """
         # Format document contexts (silently used but not mentioned)
         # Limit the number of contexts to reduce token usage
@@ -167,9 +224,12 @@ class RAGEngine:
                     content = content[:150] + "..."
                 conv_history += f"{role}: {content}\n"
         
+        # Add course context if available
+        course_context = f"You are answering questions specifically about the '{course}' course. " if course else ""
+        
         # Simplified prompt to save tokens
         prompt = f"""
-        You are a dedicated Learning Assistant, committed to helping students excel in their educational journey. Your purpose is to:
+        You are a dedicated Learning Assistant, committed to helping students excel in their educational journey. {course_context}Your purpose is to:
 
         1. Guide students through their academic challenges
         2. Explain concepts clearly and comprehensively
@@ -182,11 +242,13 @@ class RAGEngine:
         - If you don't have enough information to answer a question based on your context, politely say: "I don't have enough information to answer that question based on your learning materials."
         - NEVER mention what materials or knowledge you have access to
         - NEVER list topics you can help with - let the student ask specific questions
+        - If asked about the course and you don't have specific course information, say: "I don't have detailed information about this course yet. Please check with your instructor for the course syllabus and requirements."
 
         Core principles:
         - Focus exclusively on educational content from your context
         - Use clear, student-friendly language
         - Keep responses focused on ONLY what the student is asking about
+        - Never make up information about courses you don't have data for
 
         {conv_history}
         Student: {query}

@@ -27,6 +27,9 @@ def query():
         
         query_text = data['query']
         
+        # Get course information if provided
+        course = data.get('course')
+        
         # Input validation
         if not query_text or len(query_text.strip()) == 0:
             return jsonify({
@@ -58,20 +61,27 @@ def query():
                 "conversation_id": conversation_id
             })
         
-        # Get response (without conversation history by default)
+        # Get response with course context if provided
         response = rag_engine.answer_query(
             query_text,
+            course=course,
             context=context
         )
         
         # Force garbage collection to free memory
         gc.collect()
         
-        return jsonify({
+        # Include course in response if provided
+        result = {
             "query": query_text,
             "response": response,
             "conversation_id": conversation_id
-        })
+        }
+        
+        if course:
+            result["course"] = course
+        
+        return jsonify(result)
     except Exception as e:
         # Log the error but return a user-friendly message
         print(f"Error processing query: {str(e)}")

@@ -14,23 +14,32 @@ def load_youtube():
     
     data = request.json
     
+    # Require course information
+    if not data or 'course' not in data:
+        return jsonify({
+            "error": "Course information is required"
+        }), 400
+    
+    course = data['course']
+    
     # Override default YouTube settings if provided
-    if data and 'channel_id' in data:
+    if 'channel_id' in data:
         youtube_loader.channel_id = data['channel_id']
     
-    if data and 'max_videos' in data:
+    if 'max_videos' in data:
         # Limit max videos for memory reasons
         youtube_loader.max_videos = min(data.get('max_videos', 20), 20)  # Max 20 videos
     
     try:
-        processed_ids = youtube_loader.load_and_process(document_processor)
+        processed_ids = youtube_loader.load_and_process(document_processor, course=course)
         
         # Run garbage collection
         gc.collect()
         
         return jsonify({
-            "message": f"Processed {len(processed_ids)} videos",
-            "document_ids": processed_ids
+            "message": f"Processed {len(processed_ids)} videos for course: {course}",
+            "document_ids": processed_ids,
+            "course": course
         })
     except Exception as e:
         return jsonify({

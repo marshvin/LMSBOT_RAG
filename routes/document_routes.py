@@ -20,8 +20,21 @@ def add_document():
             "error": "Missing 'text' parameter"
         }), 400
     
+    # Require course information
+    if 'course' not in data:
+        return jsonify({
+            "error": "Course information is required"
+        }), 400
+    
     document_text = data['text']
     metadata = data.get('metadata', {})
+    
+    # Add course information to metadata
+    metadata['course'] = data['course']
+    
+    # Add doc_name if provided separately or use a default
+    if 'doc_name' in data:
+        metadata['doc_name'] = data['doc_name']
     
     try:
         doc_id = document_processor.process_document(document_text, metadata)
@@ -73,6 +86,11 @@ def upload_pdf():
     if not file.filename.endswith('.pdf'):
         return jsonify({"error": "File must be a PDF"}), 400
     
+    # Require course information
+    course = request.form.get('course')
+    if not course:
+        return jsonify({"error": "Course information is required"}), 400
+    
     # Limit PDF size
     MAX_PDF_SIZE = 5 * 1024 * 1024  # 5MB
     if file.content_length and file.content_length > MAX_PDF_SIZE:
@@ -83,9 +101,17 @@ def upload_pdf():
     try:
         file.save(temp_path)
         
-        # Process the PDF
+        # Process the PDF with course information
         pdf_loader = PDFLoader()
-        document = pdf_loader.load_document(temp_path)
+        document = pdf_loader.load_document(temp_path, course=course)
+        
+        # Add any additional metadata from form
+        additional_metadata = {}
+        if request.form.get('doc_name'):
+            additional_metadata['doc_name'] = request.form.get('doc_name')
+        
+        # Merge with document metadata
+        document["metadata"].update(additional_metadata)
         
         # Process through RAG system
         get_component = current_app.config['GET_COMPONENT']

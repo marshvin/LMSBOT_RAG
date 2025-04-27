@@ -12,6 +12,20 @@ class DocumentProcessor:
         # Generate a unique ID for the document
         doc_id = str(uuid.uuid4())
         
+        # Ensure metadata contains required fields
+        if metadata is None:
+            metadata = {}
+        
+        # Validate that course information is provided
+        if "course" not in metadata:
+            raise ValueError("Course information is required in metadata")
+            
+        # Ensure doc_name is present in metadata
+        if "doc_name" not in metadata and "filename" in metadata:
+            metadata["doc_name"] = metadata["filename"]
+        elif "doc_name" not in metadata:
+            metadata["doc_name"] = f"document_{doc_id}"
+        
         # Split the document into chunks (simplified version)
         chunks = self._chunk_text(text)
         
@@ -37,7 +51,7 @@ class DocumentProcessor:
         
         return doc_id
     
-    def _chunk_text(self, text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
+    def _chunk_text(self, text: str, chunk_size: int = 500, overlap: int = 100) -> List[str]:
         """Split text into overlapping chunks"""
         chunks = []
         start = 0
