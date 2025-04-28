@@ -28,20 +28,27 @@ class RAGEngine:
             "top_k": 40
         }
     
-    def answer_query(self, query: str, course: Optional[str] = None, context: Optional[List[Dict[str, str]]] = None, top_k: int = 3) -> str:
+    def answer_query(self, query: str, course: Optional[str] = None, context: Optional[List[Dict[str, str]]] = None, 
+                     top_k: int = 3, source_filter: Optional[str] = None) -> str:
         """
-        Answer a query using RAG technique with optional conversation history and course filtering
+        Answer a query using RAG technique with optional filtering
         
         Args:
             query: The user's question
             course: Optional course ID/name to filter results by
             context: Optional list of previous conversation messages
             top_k: Number of relevant documents to retrieve
+            source_filter: Optional filter for source type (e.g., "youtube", "pdf")
         """
         try:
-            # Check if the query is specifically about the course
+            # Check if the query is specifically about videos
             query_lower = query.lower().strip()
-            is_course_query = any(phrase in query_lower for phrase in ["this course", "the course", "course content", "about course"])
+            is_video_query = any(phrase in query_lower for phrase in 
+                ["video", "youtube", "watch", "tutorial", "lecture", "recording"])
+            
+            # Check if the query is specifically about the course
+            is_course_query = any(phrase in query_lower for phrase in 
+                ["this course", "the course", "course content", "about course"])
             
             # Check if this is a greeting without specific question
             if self._is_greeting(query) and not context:
@@ -62,74 +69,125 @@ class RAGEngine:
                         self._embedding_cache.clear()
                     self._embedding_cache[query] = query_embedding
             
-            # Create filter for course if provided
-            filter_params = None
+            # Create filter parameters
+            filter_params = {}
+            
+            # Add course filter if provided
             if course:
-                filter_params = {"course": course}
+                filter_params["course"] = course
+            
+            # Add source filter if provided or if query is specifically about videos
+            if source_filter:
+                filter_params["source"] = source_filter
+            elif is_video_query:
+                filter_params["source"] = "youtube"
             
             # Add timeout for vector store query
             start_time = time.time()
+            
+            # Execute query with filters
             results = self.vector_store.query(
                 vector=query_embedding, 
                 top_k=top_k,
-                filter_params=filter_params
+                filter_params=filter_params if filter_params else None
             )
             
-            # For course-specific queries, don't do global fallback search
-            should_fallback = not is_course_query
+            # Special handling for video queries with no results
+            if is_video_query and not results['matches']:
+                if course:
+                    return f"I couldn't find any video content for your question in the {course} course. Either no videos have been added to this course, or your question doesn't match the video content available."
+                else:
+                    return "I couldn't find any video content that matches your question. Please try a different question or check if videos have been added to the course."
             
-            # If no results and course filter was applied, try global search only for non-course-specific queries
-            if not results['matches'] and course and should_fallback:
+            # For course-specific queries, don't do global fallback search
+            should_fallback = not (is_course_query or is_video_query)
+            
+            # If no results and course filter was applied, try checking if course exists
+            if not results['matches'] and course:
                 # First check if any documents exist for this course
-                course_check = self.vector_store.query(
+                basic_course_check = self.vector_store.query(
                     vector=query_embedding, 
                     top_k=1,
                     filter_params={"course": course}
                 )
                 
                 # If the course has no documents at all, inform the user
-                if not course_check['matches']:
+                if not basic_course_check['matches']:
                     return f"The course '{course}' doesn't have any materials available yet. Please check back later when content has been added."
                 
-                # Otherwise, try a global search for non-course-specific queries
-                results = self.vector_store.query(vector=query_embedding, top_k=top_k)
-                if results['matches']:
-                    # Prepend a note about looking outside the course
-                    query = f"[Note: Searching beyond {course} materials] {query}"
+                # If we're still here, the course exists but no matches for this specific query and filters
+                
+                # If this was a video query, we already handled it above
+                if is_video_query:
+                    pass  # Already handled above
+                # If it was a course query, don't fall back
+                elif is_course_query:
+                    return f"I don't have specific information about the course '{course}' content that matches your query. Please check with your instructor for more details."
+                # Otherwise, we can try without source filter but keeping course filter
+                elif should_fallback and "source" in filter_params:
+                    # Try again without source filter
+                    filter_params.pop("source")
+                    results = self.vector_store.query(
+                        vector=query_embedding, 
+                        top_k=top_k,
+                        filter_params=filter_params
+                    )
             
             # Limit processing time
             if time.time() - start_time > 10:
                 return "Sorry, the search took too long. Please try a more specific question."
             
-            # Extract contexts from search results - limit length to reduce memory usage
+            # Extract contexts from search results
             doc_contexts = []
+            sources_used = set()
+            
             for match in results['matches']:
                 if 'text' in match['metadata']:
                     text = match['metadata']['text']
+                    source_type = match['metadata'].get('source', 'unknown')
+                    sources_used.add(source_type)
+                    
                     # Add source metadata if available
                     if 'doc_name' in match['metadata']:
                         source_info = f"Source: {match['metadata']['doc_name']}"
                         if 'course' in match['metadata']:
                             source_info += f" ({match['metadata']['course']})"
+                        if source_type == 'youtube':
+                            source_info += " [Video]"
                         text = f"{text}\n[{source_info}]"
                     
                     # Limit text length to reduce memory usage
-                    if len(text) > 500:  # Reduced from 1000
+                    if len(text) > 500:
                         text = text[:500] + "..."
                     doc_contexts.append(text)
             
             # If no contexts found, inform the user
             if not doc_contexts:
                 if course:
-                    if is_course_query:
+                    if is_video_query:
+                        return f"I couldn't find any video content for your question in the {course} course. Perhaps no videos have been added for this topic."
+                    elif is_course_query:
                         return f"I don't have specific information about the course '{course}' yet. Please check with your instructor for course details."
                     else:
                         return f"I couldn't find any relevant information for your question in the {course} course materials. Could you try rephrasing your question or asking about a different topic?"
                 else:
                     return "I couldn't find any relevant information for your question in our learning materials. Could you try rephrasing your question or asking about a different topic?"
             
+            # Set source type indicator for the prompt
+            source_indicator = ""
+            if "youtube" in sources_used and len(sources_used) == 1:
+                source_indicator = "You are answering based on video content. "
+            elif "pdf" in sources_used and len(sources_used) == 1:
+                source_indicator = "You are answering based on document content. "
+            
             # Create a prompt with the retrieved context and conversation history
-            prompt = self._create_prompt(query, doc_contexts, context, course)
+            prompt = self._create_prompt(
+                query=query, 
+                doc_contexts=doc_contexts, 
+                conv_context=context, 
+                course=course,
+                source_indicator=source_indicator
+            )
             
             # Initialize model just when needed
             model = genai.GenerativeModel('gemini-1.5-pro')
@@ -193,7 +251,8 @@ class RAGEngine:
         
         return False
     
-    def _create_prompt(self, query: str, doc_contexts: List[str], conv_context: Optional[List[Dict[str, str]]] = None, course: Optional[str] = None) -> str:
+    def _create_prompt(self, query: str, doc_contexts: List[str], conv_context: Optional[List[Dict[str, str]]] = None, 
+                      course: Optional[str] = None, source_indicator: str = "") -> str:
         """
         Create a prompt using the query, retrieved contexts, and conversation history
         
@@ -202,6 +261,7 @@ class RAGEngine:
             doc_contexts: List of relevant document contexts
             conv_context: Optional list of previous conversation messages
             course: Optional course identifier for context
+            source_indicator: Optional indicator of source type (video/document)
         """
         # Format document contexts (silently used but not mentioned)
         # Limit the number of contexts to reduce token usage
@@ -245,7 +305,7 @@ class RAGEngine:
         
         # Simplified prompt to save tokens
         prompt = f"""
-        You are a dedicated Learning Assistant, committed to helping students excel in their educational journey. {course_context}Your purpose is to:
+        You are a dedicated Learning Assistant, committed to helping students excel in their educational journey. {course_context}{source_indicator}Your purpose is to:
 
         1. Guide students through their academic challenges
         2. Explain concepts clearly and comprehensively
@@ -254,6 +314,8 @@ class RAGEngine:
 
         STRICT LIMITATIONS:
         - You can ONLY answer questions directly related to the provided context materials
+        - NEVER invent or hallucinate information not present in the context materials
+        - If a question is about videos and you don't have video context, say: "I don't have any video content that answers your question."
         - If a question is about politics, sports, entertainment, current events, or anything outside your provided context, respond with: "I'm sorry, I can only assist with questions related to your learning materials. Please ask me something about your course content."
         - NEVER create or fabricate information that is not in your context
         - DO NOT answer general knowledge questions that aren't covered in your learning materials
@@ -261,6 +323,7 @@ class RAGEngine:
         - NEVER mention what materials or knowledge you have access to
         - NEVER list topics you can help with - let the student ask specific questions
         - If asked about the course and you don't have specific course information, say: "I don't have detailed information about this course yet. Please check with your instructor for the course syllabus and requirements."
+        - Stay strictly focused on the retrieved context content and don't make up details
 
         Core principles:
         - Focus exclusively on educational content from your context

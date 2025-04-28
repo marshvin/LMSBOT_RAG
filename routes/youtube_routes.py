@@ -45,3 +45,48 @@ def load_youtube():
         return jsonify({
             "error": f"Error loading YouTube videos: {str(e)}"
         }), 500
+
+@youtube_bp.route('/youtube/video', methods=['POST'])
+def process_single_video():
+    """Process a single YouTube video by its ID"""
+    # Lazy load components when needed
+    get_component = current_app.config['GET_COMPONENT']
+    youtube_loader = get_component("youtube_loader")
+    document_processor = get_component("document_processor")
+    
+    data = request.json
+    
+    # Validate required parameters
+    if not data:
+        return jsonify({"error": "Missing request body"}), 400
+        
+    if 'course' not in data:
+        return jsonify({"error": "Course information is required"}), 400
+        
+    if 'video_id' not in data:
+        return jsonify({"error": "YouTube video ID is required"}), 400
+    
+    course = data['course']
+    video_id = data['video_id']
+    
+    try:
+        # Process the single video
+        doc_id = youtube_loader.process_single_video(
+            video_id=video_id,
+            document_processor=document_processor,
+            course=course
+        )
+        
+        # Run garbage collection
+        gc.collect()
+        
+        return jsonify({
+            "message": f"Successfully processed YouTube video for course: {course}",
+            "document_id": doc_id,
+            "video_id": video_id,
+            "course": course
+        })
+    except Exception as e:
+        return jsonify({
+            "error": f"Error processing YouTube video: {str(e)}"
+        }), 500

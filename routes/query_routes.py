@@ -30,6 +30,18 @@ def query():
         # Get course information if provided
         course = data.get('course')
         
+        # Get source filter if provided
+        source_filter = data.get('source')
+        
+        # Detect video-specific queries
+        query_lower = query_text.lower()
+        is_video_query = any(word in query_lower for word in 
+            ["video", "youtube", "watch", "tutorial", "lecture", "recording"])
+        
+        # If query is about videos but no source filter provided, add it
+        if is_video_query and not source_filter:
+            source_filter = "youtube"
+        
         # Input validation
         if not query_text or len(query_text.strip()) == 0:
             return jsonify({
@@ -37,7 +49,7 @@ def query():
             }), 400
             
         # Limit query length more strictly
-        if len(query_text) > 500:  # Reduced from 1000
+        if len(query_text) > 500:
             return jsonify({
                 "error": "Query too long (max 500 characters)"
             }), 400
@@ -61,17 +73,18 @@ def query():
                 "conversation_id": conversation_id
             })
         
-        # Get response with course context if provided
+        # Get response with course context and source filter if provided
         response = rag_engine.answer_query(
             query_text,
             course=course,
-            context=context
+            context=context,
+            source_filter=source_filter
         )
         
         # Force garbage collection to free memory
         gc.collect()
         
-        # Include course in response if provided
+        # Include course and source in response if provided
         result = {
             "query": query_text,
             "response": response,
@@ -80,6 +93,9 @@ def query():
         
         if course:
             result["course"] = course
+            
+        if source_filter:
+            result["source"] = source_filter
         
         return jsonify(result)
     except Exception as e:
@@ -88,6 +104,67 @@ def query():
         return jsonify({
             "query": data.get('query', ''),
             "response": "I'm sorry, I encountered an error while processing your question. Please try again.",
+            "conversation_id": str(uuid4()),
+            "error": "Internal server error"
+        }), 500
+
+@query_bp.route('/query/video', methods=['POST'])
+def video_query():
+    """Special endpoint for video-specific queries"""
+    start_time = time.time()
+    
+    try:
+        # Lazy load RAG engine only when needed
+        get_component = current_app.config['GET_COMPONENT']
+        rag_engine = get_component("rag_engine")
+        
+        data = request.json
+        
+        if not data or 'query' not in data:
+            return jsonify({
+                "error": "Missing 'query' parameter"
+            }), 400
+        
+        query_text = data['query']
+        course = data.get('course')
+        
+        # Generate a unique ID for this query
+        conversation_id = str(uuid4())
+        
+        # Use empty context - no conversation history
+        context = []
+        
+        # For stateful behavior, client should include previous messages in request
+        if data.get('previous_messages') and isinstance(data.get('previous_messages'), list):
+            context = data['previous_messages'][:3]
+        
+        # Get response, forcing source filter to youtube
+        response = rag_engine.answer_query(
+            query_text,
+            course=course,
+            context=context,
+            source_filter="youtube"
+        )
+        
+        # Force garbage collection to free memory
+        gc.collect()
+        
+        result = {
+            "query": query_text,
+            "response": response,
+            "conversation_id": conversation_id,
+            "source": "youtube"
+        }
+        
+        if course:
+            result["course"] = course
+        
+        return jsonify(result)
+    except Exception as e:
+        print(f"Error processing video query: {str(e)}")
+        return jsonify({
+            "query": data.get('query', ''),
+            "response": "I'm sorry, I encountered an error while processing your video question. Please try again.",
             "conversation_id": str(uuid4()),
             "error": "Internal server error"
         }), 500
