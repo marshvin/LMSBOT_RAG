@@ -22,9 +22,9 @@ class RAGEngine:
         
         # Default generation config with timeouts
         self.generation_config = {
-            "max_output_tokens": 1024, 
-            "temperature": 0.2,
-            "top_p": 0.9,
+            "max_output_tokens": 1500,  
+            "temperature": 0.3,  
+            "top_p": 0.92,
             "top_k": 40
         }
     
@@ -227,12 +227,30 @@ class RAGEngine:
         # Add course context if available
         course_context = f"You are answering questions specifically about the '{course}' course. " if course else ""
         
+        # Check if the query seems to warrant a detailed response
+        is_complex_query = any(word in query.lower() for word in [
+            "explain", "describe", "how", "why", "what is", "what are", "difference", "compare", "list", "steps", "process"
+        ])
+        
+        # Customized response formatting guidance based on query type
+        response_format_guidance = """
+        Response format:
+        - For complex topics, use a structured approach with clear explanations
+        - Use bullet points or numbered lists when explaining multiple concepts, steps, or examples
+        - Include examples where helpful
+        - Break down complex ideas into digestible parts
+        - Be conversational but thorough
+        - Provide comprehensive answers without being overly verbose
+        """
+        
         # Simplified prompt to save tokens
         prompt = f"""
         You are a dedicated Learning Assistant, committed to helping students excel in their educational journey. {course_context}Your purpose is to:
 
         1. Guide students through their academic challenges
         2. Explain concepts clearly and comprehensively
+
+        {response_format_guidance}
 
         STRICT LIMITATIONS:
         - You can ONLY answer questions directly related to the provided context materials
@@ -249,6 +267,7 @@ class RAGEngine:
         - Use clear, student-friendly language
         - Keep responses focused on ONLY what the student is asking about
         - Never make up information about courses you don't have data for
+        - Provide appropriately detailed responses with examples and structured formatting when helpful
 
         {conv_history}
         Student: {query}

@@ -12,7 +12,6 @@ A modular chatbot implementation with Retrieval Augmented Generation (RAG) capab
 - YouTube content loader
 
 ## Setup
-
 1. Clone this repository
 2. Install dependencies:
    ```
