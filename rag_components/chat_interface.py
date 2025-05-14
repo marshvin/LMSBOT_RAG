@@ -7,6 +7,7 @@ class ChatInterface:
     def start(self):
         """Start the chat interface"""
         print("Welcome to the RAG Chatbot! Type 'exit' to quit.")
+        print("You can ask questions or generate H5P content by typing 'generate h5p quiz about [topic]'")
         
         while True:
             user_input = input("\nYou: ")
@@ -15,7 +16,19 @@ class ChatInterface:
                 print("Goodbye!")
                 break
             
-            # Process the query through RAG
+            # Check if the user wants to generate H5P content
+            if "h5p" in user_input.lower() or "generate quiz" in user_input.lower() or "create assessment" in user_input.lower():
+                # Process the query for H5P content
+                h5p_content = self.rag_engine.generate_h5p_content(user_input)
+                
+                # Store the interaction in chat history
+                self.chat_history.append({"user": user_input, "bot": "H5P content generated"})
+                
+                # Display a summary of the generated content
+                print(f"\nBot: {h5p_content}")
+                continue
+            
+            # Process regular query through RAG
             response = self.rag_engine.answer_query(user_input)
             
             # Store the interaction in chat history

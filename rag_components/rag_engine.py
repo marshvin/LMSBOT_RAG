@@ -4,32 +4,98 @@ from typing import List, Dict, Any, Optional
 import time
 import re
 import gc
+import logging
+import threading
+
+# Add imports for fallback options - make OpenAI import conditional
+import os
+try:
+    import openai
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, 
+                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger('RAGEngine')
 
 class RAGEngine:
-    def __init__(self, embedding_service, vector_store, llm_api_key, use_cache=False):
-        self.embedding_service = embedding_service
-        self.vector_store = vector_store
+    def __init__(self, embedding_service, vector_store, llm_api_key, use_cache=False, openai_api_key=None, primary_llm="gemini"):
+        """
+        Initialize the RAG Engine with required services
         
-        # Initialize Gemini API
-        genai.configure(api_key=llm_api_key)
-        # Don't store the model - create it when needed
-        self.llm_api_key = llm_api_key
-        
-        # Cache for embeddings - only used if use_cache is True
-        self._embedding_cache = {} if use_cache else None
-        self._max_cache_entries = 10  # Further reduced from 20
-        self._use_cache = use_cache
-        
-        # Default generation config with timeouts
-        self.generation_config = {
-            "max_output_tokens": 1500,  
-            "temperature": 0.3,  
-            "top_p": 0.92,
-            "top_k": 40
-        }
+        Args:
+            embedding_service: Service for creating embeddings
+            vector_store: Vector database for storing and querying embeddings
+            llm_api_key: API key for Gemini LLM
+            use_cache: Whether to use embedding caching (default: False)
+            openai_api_key: Optional API key for OpenAI
+            primary_llm: Which LLM to use as primary ("gemini" or "openai")
+        """
+        try:
+            self.embedding_service = embedding_service
+            self.vector_store = vector_store
+            
+            # Initialize Gemini API
+            self.gemini_available = False
+            if llm_api_key:
+                try:
+                    genai.configure(api_key=llm_api_key)
+                    self.gemini_available = True
+                    self.llm_api_key = llm_api_key
+                    logger.info("Gemini API initialized successfully")
+                except Exception as e:
+                    logger.warning(f"Gemini API initialization failed: {str(e)}")
+            
+            # Initialize OpenAI
+            self.openai_available = OPENAI_AVAILABLE and openai_api_key is not None
+            self.openai_api_key = openai_api_key
+            self.openai_client = None
+            if self.openai_available:
+                try:
+                    self.openai_client = openai.OpenAI(api_key=openai_api_key)
+                    logger.info("OpenAI API initialized successfully")
+                except Exception as e:
+                    logger.warning(f"OpenAI initialization failed: {str(e)}")
+                    self.openai_available = False
+            
+            # Set primary LLM based on availability and preference
+            self.primary_llm = primary_llm
+            if primary_llm == "openai" and not self.openai_available:
+                logger.warning("OpenAI set as primary but not available, falling back to Gemini")
+                self.primary_llm = "gemini"
+            elif primary_llm == "gemini" and not self.gemini_available:
+                logger.warning("Gemini set as primary but not available, falling back to OpenAI")
+                self.primary_llm = "openai" if self.openai_available else None
+            
+            logger.info(f"Using {self.primary_llm} as primary LLM")
+            
+            # Cache for embeddings - only used if use_cache is True
+            self._embedding_cache = {} if use_cache else None
+            self._max_cache_entries = 10
+            self._use_cache = use_cache
+            
+            # Default generation config with timeouts
+            self.generation_config = {
+                "max_output_tokens": 800,  # Reduced from 1500
+                "temperature": 0.3,  
+                "top_p": 0.92,
+                "top_k": 40
+            }
+            
+            # Rate limiting - track last request time
+            self._last_request_time = 0
+            self._request_spacing = 1.0  # Minimum seconds between requests
+            self._request_lock = threading.Lock()
+            
+            logger.info("RAGEngine initialized successfully with optimized settings")
+        except Exception as e:
+            logger.error(f"Error initializing RAGEngine: {str(e)}")
+            raise
     
     def answer_query(self, query: str, course: Optional[str] = None, context: Optional[List[Dict[str, str]]] = None, 
-                     top_k: int = 3, source_filter: Optional[str] = None) -> str:
+                     top_k: int = 2, source_filter: Optional[str] = None) -> str:
         """
         Answer a query using RAG technique with optional filtering
         
@@ -37,18 +103,27 @@ class RAGEngine:
             query: The user's question
             course: Optional course ID/name to filter results by
             context: Optional list of previous conversation messages
-            top_k: Number of relevant documents to retrieve
+            top_k: Number of relevant documents to retrieve (reduced from 3 to 2)
             source_filter: Optional filter for source type (e.g., "youtube", "pdf")
         """
         try:
+            logger.info(f"Processing query: '{query}' for course: '{course}'")
+            
             # Check if the query is specifically about videos
             query_lower = query.lower().strip()
-            is_video_query = any(phrase in query_lower for phrase in 
+            is_video_query = any(word in query_lower for word in 
                 ["video", "youtube", "watch", "tutorial", "lecture", "recording"])
             
             # Check if the query is specifically about the course
             is_course_query = any(phrase in query_lower for phrase in 
                 ["this course", "the course", "course content", "about course"])
+            
+            # Check if query is about generating H5P content
+            is_h5p_query = "h5p" in query_lower or "generate quiz" in query_lower or "create assessment" in query_lower
+            
+            # Handle H5P content generation
+            if is_h5p_query:
+                return self.generate_h5p_content(query, course)
             
             # Check if this is a greeting without specific question
             if self._is_greeting(query) and not context:
@@ -58,16 +133,23 @@ class RAGEngine:
                     return "Hi there! I'm your Learning Assistant, ready to help with your course. What would you like to learn today?"
             
             # Generate embedding for the query - use cache if enabled and available
+            logger.info("Generating query embedding")
             query_embedding = None
-            if self._use_cache and self._embedding_cache is not None and query in self._embedding_cache:
-                query_embedding = self._embedding_cache[query]
-            else:
-                query_embedding = self.embedding_service.get_embedding(query)
-                # Cache the embedding if caching is enabled
-                if self._use_cache and self._embedding_cache is not None:
-                    if len(self._embedding_cache) > self._max_cache_entries:
-                        self._embedding_cache.clear()
-                    self._embedding_cache[query] = query_embedding
+            try:
+                if self._use_cache and self._embedding_cache is not None and query in self._embedding_cache:
+                    query_embedding = self._embedding_cache[query]
+                    logger.info("Using cached embedding")
+                else:
+                    query_embedding = self.embedding_service.get_embedding(query)
+                    logger.info("Generated new embedding")
+                    # Cache the embedding if caching is enabled
+                    if self._use_cache and self._embedding_cache is not None:
+                        if len(self._embedding_cache) > self._max_cache_entries:
+                            self._embedding_cache.clear()
+                        self._embedding_cache[query] = query_embedding
+            except Exception as e:
+                logger.error(f"Error generating embedding: {str(e)}")
+                return "I'm having trouble processing your question. Please try again later."
             
             # Create filter parameters
             filter_params = {}
@@ -82,18 +164,25 @@ class RAGEngine:
             elif is_video_query:
                 filter_params["source"] = "youtube"
             
+            logger.info(f"Querying vector store with filters: {filter_params}")
+            
             # Add timeout for vector store query
             start_time = time.time()
             
             # Execute query with filters
-            results = self.vector_store.query(
-                vector=query_embedding, 
-                top_k=top_k,
-                filter_params=filter_params if filter_params else None
-            )
+            try:
+                results = self.vector_store.query(
+                    vector=query_embedding, 
+                    top_k=top_k,  # Reduced from 3 to 2
+                    filter_params=filter_params if filter_params else None
+                )
+                logger.info(f"Vector store query returned {len(results.get('matches', []))} results")
+            except Exception as e:
+                logger.error(f"Error querying vector store: {str(e)}")
+                return "I'm having trouble searching for information related to your question. Please try again later."
             
             # Special handling for video queries with no results
-            if is_video_query and not results['matches']:
+            if is_video_query and not results.get('matches', []):
                 if course:
                     return f"I couldn't find any video content for your question in the {course} course. Either no videos have been added to this course, or your question doesn't match the video content available."
                 else:
@@ -103,46 +192,55 @@ class RAGEngine:
             should_fallback = not (is_course_query or is_video_query)
             
             # If no results and course filter was applied, try checking if course exists
-            if not results['matches'] and course:
+            if not results.get('matches', []) and course:
+                logger.info(f"No results found for course '{course}', checking if course exists")
                 # First check if any documents exist for this course
-                basic_course_check = self.vector_store.query(
-                    vector=query_embedding, 
-                    top_k=1,
-                    filter_params={"course": course}
-                )
-                
-                # If the course has no documents at all, inform the user
-                if not basic_course_check['matches']:
-                    return f"The course '{course}' doesn't have any materials available yet. Please check back later when content has been added."
-                
-                # If we're still here, the course exists but no matches for this specific query and filters
-                
-                # If this was a video query, we already handled it above
-                if is_video_query:
-                    pass  # Already handled above
-                # If it was a course query, don't fall back
-                elif is_course_query:
-                    return f"I don't have specific information about the course '{course}' content that matches your query. Please check with your instructor for more details."
-                # Otherwise, we can try without source filter but keeping course filter
-                elif should_fallback and "source" in filter_params:
-                    # Try again without source filter
-                    filter_params.pop("source")
-                    results = self.vector_store.query(
+                try:
+                    basic_course_check = self.vector_store.query(
                         vector=query_embedding, 
-                        top_k=top_k,
-                        filter_params=filter_params
+                        top_k=1,
+                        filter_params={"course": course}
                     )
+                    
+                    # If the course has no documents at all, inform the user
+                    if not basic_course_check.get('matches', []):
+                        logger.info(f"No documents found for course '{course}'")
+                        return f"The course '{course}' doesn't have any materials available yet. Please check back later when content has been added."
+                    
+                    # If we're still here, the course exists but no matches for this specific query and filters
+                    logger.info(f"Course '{course}' exists but no matches for query")
+                    
+                    # If this was a video query, we already handled it above
+                    if is_video_query:
+                        pass  # Already handled above
+                    # If it was a course query, don't fall back
+                    elif is_course_query:
+                        return f"I don't have specific information about the course '{course}' content that matches your query. Please check with your instructor for more details."
+                    # Otherwise, we can try without source filter but keeping course filter
+                    elif should_fallback and "source" in filter_params:
+                        # Try again without source filter
+                        logger.info("Attempting fallback search without source filter")
+                        filter_params.pop("source")
+                        results = self.vector_store.query(
+                            vector=query_embedding, 
+                            top_k=top_k,
+                            filter_params=filter_params
+                        )
+                except Exception as e:
+                    logger.error(f"Error during course existence check: {str(e)}")
+                    return "I'm having trouble accessing course information. Please try again later."
             
             # Limit processing time
             if time.time() - start_time > 10:
+                logger.warning("Vector store query timeout")
                 return "Sorry, the search took too long. Please try a more specific question."
             
             # Extract contexts from search results
             doc_contexts = []
             sources_used = set()
             
-            for match in results['matches']:
-                if 'text' in match['metadata']:
+            for match in results.get('matches', []):
+                if 'metadata' in match and 'text' in match['metadata']:
                     text = match['metadata']['text']
                     source_type = match['metadata'].get('source', 'unknown')
                     sources_used.add(source_type)
@@ -156,13 +254,16 @@ class RAGEngine:
                             source_info += " [Video]"
                         text = f"{text}\n[{source_info}]"
                     
-                    # Limit text length to reduce memory usage
-                    if len(text) > 500:
-                        text = text[:500] + "..."
+                    # Limit text length more strictly to reduce token usage
+                    if len(text) > 300:  # Reduced from 500
+                        text = text[:300] + "..."
                     doc_contexts.append(text)
+            
+            logger.info(f"Extracted {len(doc_contexts)} contexts from search results")
             
             # If no contexts found, inform the user
             if not doc_contexts:
+                logger.info("No relevant contexts found")
                 if course:
                     if is_video_query:
                         return f"I couldn't find any video content for your question in the {course} course. Perhaps no videos have been added for this topic."
@@ -181,6 +282,7 @@ class RAGEngine:
                 source_indicator = "You are answering based on document content. "
             
             # Create a prompt with the retrieved context and conversation history
+            logger.info("Creating prompt for LLM")
             prompt = self._create_prompt(
                 query=query, 
                 doc_contexts=doc_contexts, 
@@ -189,10 +291,81 @@ class RAGEngine:
                 source_indicator=source_indicator
             )
             
+            # Implement rate limiting for API calls
+            with self._request_lock:
+                current_time = time.time()
+                time_since_last_request = current_time - self._last_request_time
+                
+                if time_since_last_request < self._request_spacing:
+                    # Wait if needed to avoid hitting rate limits
+                    sleep_time = max(0, self._request_spacing - time_since_last_request)
+                    logger.info(f"Rate limiting: sleeping for {sleep_time:.2f} seconds")
+                    time.sleep(sleep_time)
+                
+                # Update last request time
+                self._last_request_time = time.time()
+            
+            # Generate response using configured LLM
+            logger.info(f"Generating response with {self.primary_llm}")
+            
+            # Different LLM handling based on primary choice
+            if self.primary_llm == "openai" and self.openai_available:
+                return self._generate_openai_response(prompt)
+            elif self.primary_llm == "gemini" and self.gemini_available:
+                return self._generate_gemini_response(prompt)
+            else:
+                # If no LLM is available, use simple response
+                logger.warning("No LLM is available, using simple response fallback")
+                return self._create_simple_response(doc_contexts, query)
+            
+        except Exception as e:
+            logger.error(f"Unhandled exception in answer_query: {str(e)}")
+            return f"I'm sorry, I encountered an error while processing your question. Please try again with a different question. If this persists, please contact support."
+    
+    def _generate_openai_response(self, prompt: str) -> str:
+        """Generate response using OpenAI"""
+        try:
+            start_time = time.time()
+            
+            # Use gpt-3.5-turbo for better cost efficiency
+            response = self.openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",  # More capable than instruct
+                messages=[
+                    {"role": "system", "content": "You are a helpful educational assistant."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=800
+            )
+            
+            # Check for timeout
+            if time.time() - start_time > 20:
+                logger.warning("OpenAI response timeout")
+                return "I apologize, but processing your question took too long. Could you try a simpler question?"
+            
+            # Clean up to save memory
+            del prompt
+            gc.collect()
+            
+            logger.info("Successfully generated OpenAI response")
+            return response.choices[0].message.content
+            
+        except Exception as e:
+            logger.error(f"Error generating OpenAI response: {str(e)}")
+            
+            # If OpenAI fails, try Gemini as fallback
+            if self.gemini_available:
+                logger.info("Trying Gemini as fallback")
+                return self._generate_gemini_response(prompt)
+            else:
+                return "I'm having trouble generating a response. The AI service is currently experiencing issues."
+    
+    def _generate_gemini_response(self, prompt: str) -> str:
+        """Generate response using Gemini"""
+        try:
             # Initialize model just when needed
             model = genai.GenerativeModel('gemini-1.5-pro')
             
-            # Generate response using LLM with timeout
             start_time = time.time()
             response = model.generate_content(
                 prompt, 
@@ -207,6 +380,7 @@ class RAGEngine:
             
             # Check for timeout
             if time.time() - start_time > 20:
+                logger.warning("Gemini response timeout")
                 return "I apologize, but processing your question took too long. Could you try a simpler question?"
             
             # Clean up to save memory
@@ -214,16 +388,328 @@ class RAGEngine:
             del model
             gc.collect()
             
+            logger.info("Successfully generated Gemini response")
             return response.text
             
         except Exception as e:
-            # Return a friendly error message
-            return f"I'm sorry, I encountered an error while processing your question. Please try again with a different question. If this persists, please contact support."
+            logger.error(f"Error generating Gemini response: {str(e)}")
+            
+            # Try OpenAI fallback if available
+            if self.openai_available:
+                logger.info("Trying OpenAI as fallback")
+                return self._generate_openai_response(prompt)
+            
+            # If both fail, use direct context response
+            return self._create_simple_response([], "")
+    
+    def _handle_llm_error(self, error, prompt, doc_contexts, query):
+        """Handle LLM errors with appropriate fallback strategies"""
+        error_str = str(error).lower()
+        logger.error(f"Error generating LLM response: {str(error)}")
+                
+        # Check if this is a rate limit error (429)
+        if "429" in error_str or "quota" in error_str or "rate limit" in error_str:
+            logger.info("Detected rate limit error, attempting fallback")
+            
+            # If primary is Gemini and hit rate limit, try OpenAI
+            if self.primary_llm == "gemini" and self.openai_available:
+                try:
+                    logger.info("Trying OpenAI as fallback")
+                    return self._generate_openai_response(prompt)
+                except Exception as fallback_error:
+                    logger.error(f"OpenAI fallback also failed: {str(fallback_error)}")
+            
+            # If primary is OpenAI and hit rate limit, try Gemini
+            elif self.primary_llm == "openai" and self.gemini_available:
+                try:
+                    logger.info("Trying Gemini as fallback")
+                    return self._generate_gemini_response(prompt)
+                except Exception as fallback_error:
+                    logger.error(f"Gemini fallback also failed: {str(fallback_error)}")
+            
+            # If all else fails, use simple response
+            logger.info("Using direct context fallback")
+            return self._create_simple_response(doc_contexts, query)
+        
+        # For other types of errors, return a generic message
+        return "I'm having trouble generating a response to your question. This might be due to a temporary issue with our AI service. Please try again later."
+    
+    def _create_simple_response(self, doc_contexts: List[str], query: str) -> str:
+        """Create a simple response directly from retrieved contexts when LLM is unavailable"""
+        if not doc_contexts:
+            return "I found information related to your question, but I'm having trouble processing it right now. Please try again later."
+        
+        # Use the most relevant context (first one) as basis for response
+        context = doc_contexts[0]
+        
+        # Create a simple disclaimer about service limitations
+        disclaimer = "I'm currently operating in lightweight mode. "
+        
+        # Extract key sentences from the context
+        sentences = context.split('.')
+        short_context = '. '.join(sentences[:3]) + '.'
+        
+        return f"{disclaimer}Based on the information I have: {short_context}"
+    
+    def generate_h5p_content(self, query: str, course: Optional[str] = None) -> str:
+        """
+        Generate H5P content based on the query and course materials
+        
+        Args:
+            query: The user's request for H5P content
+            course: Optional course to generate content for
+        """
+        # First, extract what type of H5P content is requested
+        content_type = self._determine_h5p_content_type(query)
+        
+        # If course is provided, get relevant content for that course
+        if course:
+            # Generate embedding for a general course query to get course materials
+            course_query = f"important concepts in {course}"
+            course_embedding = self.embedding_service.get_embedding(course_query)
+            
+            # Query vector store for course materials
+            results = self.vector_store.query(
+                vector=course_embedding,
+                top_k=3,  # Reduced from 5
+                filter_params={"course": course}
+            )
+            
+            # Extract contexts for content generation
+            contexts = []
+            for match in results.get('matches', []):
+                if 'metadata' in match and 'text' in match['metadata']:
+                    text = match['metadata']['text']
+                    # Limit text length to reduce token usage
+                    if len(text) > 300:  # Reduced from default
+                        text = text[:300] + "..."
+                    contexts.append(text)
+            
+            # If no contexts found, return a message
+            if not contexts:
+                return f"I couldn't find any content for the {course} course to generate H5P materials. Please make sure the course has materials added."
+        else:
+            contexts = []  # No course-specific context
+        
+        # Generate H5P content based on type and contexts
+        try:
+            # Implement rate limiting for API calls
+            with self._request_lock:
+                current_time = time.time()
+                time_since_last_request = current_time - self._last_request_time
+                
+                if time_since_last_request < self._request_spacing:
+                    # Wait if needed to avoid hitting rate limits
+                    sleep_time = max(0, self._request_spacing - time_since_last_request)
+                    logger.info(f"Rate limiting: sleeping for {sleep_time:.2f} seconds")
+                    time.sleep(sleep_time)
+                
+                # Update last request time
+                self._last_request_time = time.time()
+            
+            if content_type == "quiz":
+                h5p_content = self._generate_quiz(query, contexts)
+            elif content_type == "interactive_video":
+                h5p_content = self._generate_interactive_video(query, contexts)
+            elif content_type == "course_presentation":
+                h5p_content = self._generate_course_presentation(query, contexts)
+            else:
+                h5p_content = self._generate_quiz(query, contexts)  # Default to quiz
+                
+            return h5p_content
+        except Exception as e:
+            logger.error(f"Error generating H5P content: {str(e)}")
+            return "I encountered an error while generating H5P content. Please try again later or with a different request."
+    
+    def _create_prompt(self, query: str, doc_contexts: List[str], conv_context: Optional[List[Dict[str, str]]] = None, 
+                      course: Optional[str] = None, source_indicator: str = "") -> str:
+        """
+        Create a prompt using the query, retrieved contexts, and conversation history
+        
+        Args:
+            query: The user's question
+            doc_contexts: List of relevant document contexts
+            conv_context: Optional list of previous conversation messages
+            course: Optional course identifier for context
+            source_indicator: Optional indicator of source type (video/document)
+        """
+        # Format document contexts (silently used but not mentioned)
+        # Limit the number of contexts to reduce token usage
+        if len(doc_contexts) > 1:  # Reduced from 2
+            doc_contexts = doc_contexts[:1]  # Only use most relevant context
+            
+        doc_context_str = "\n\n".join([f"{context}" for i, context in enumerate(doc_contexts)])
+        
+        # Format conversation history if available - limit to last message to save tokens
+        conv_history = ""
+        if conv_context:
+            # Only keep most recent message - reduced from 2 to 1
+            recent_messages = conv_context[-1:] if len(conv_context) > 1 else conv_context
+            conv_history = "\nPrevious conversation:\n"
+            for msg in recent_messages:
+                role = msg["role"].capitalize() if "role" in msg else "Unknown"
+                # Truncate content to reduce token usage - reduced from 150 to 100
+                content = msg.get("content", "")
+                if content and len(content) > 100:
+                    content = content[:100] + "..."
+                conv_history += f"{role}: {content}\n"
+        
+        # Add course context if available
+        course_context = f"You are answering questions specifically about the '{course}' course. " if course else ""
+        
+        # Simplified prompt to save tokens - remove unnecessary instructions
+        prompt = f"""
+        You are a Learning Assistant. {course_context}{source_indicator}Your purpose is to guide students and explain concepts clearly.
+
+        LIMITATIONS:
+        - Answer only based on the provided context
+        - Don't invent information
+        - Keep responses concise and to the point
+        - Use structured explanations for complex topics
+
+        {conv_history}
+        Student: {query}
+
+        Assistant: 
+
+        [Use this knowledge: {doc_context_str}]
+        """
+        
+        return prompt
+    
+    def _determine_h5p_content_type(self, query: str) -> str:
+        """Determine what type of H5P content to generate based on query"""
+        query_lower = query.lower()
+        
+        if any(term in query_lower for term in ["quiz", "questions", "test", "assessment"]):
+            return "quiz"
+        elif any(term in query_lower for term in ["video", "interactive video"]):
+            return "interactive_video"
+        elif any(term in query_lower for term in ["presentation", "slides"]):
+            return "course_presentation"
+        else:
+            return "quiz"  # Default to quiz
+    
+    def _generate_quiz(self, query: str, contexts: List[str]) -> str:
+        """Generate an H5P quiz based on available contexts"""
+        # Without direct LLM access, create a simple quiz template
+        
+        topic = query.replace("generate quiz", "").replace("create quiz", "").replace("h5p", "").strip()
+        if not topic:
+            topic = "the provided materials"
+            
+        quiz_template = f"""
+I've generated a quiz about {topic}. Here's the H5P Quiz content in JSON format that you can import:
+
+```json
+{{
+  "title": "Quiz on {topic}",
+  "questions": [
+    {{
+      "question": "What is the main concept of {topic}?",
+      "type": "multichoice",
+      "options": [
+        "Option A - First key concept",
+        "Option B - Alternative concept",
+        "Option C - Related but incorrect concept",
+        "Option D - Distractor"
+      ],
+      "correctAnswer": "Option A - First key concept"
+    }},
+    {{
+      "question": "Which of the following is true about {topic}?",
+      "type": "multichoice",
+      "options": [
+        "Option A - True statement about the topic",
+        "Option B - False statement",
+        "Option C - Partially true statement",
+        "Option D - Unrelated statement"
+      ],
+      "correctAnswer": "Option A - True statement about the topic"
+    }}
+  ]
+}}
+```
+
+To use this in Moodle:
+1. Copy this JSON content
+2. In Moodle, create a new H5P activity
+3. Choose the "Import" option
+4. Paste this content into the JSON import field
+5. Customize the questions and answers as needed
+
+Note: This is a template quiz. You should review and modify the questions/answers to ensure they accurately reflect your course content.
+"""
+        return quiz_template
+    
+    def _generate_interactive_video(self, query: str, contexts: List[str]) -> str:
+        """Generate H5P interactive video template"""
+        topic = query.replace("generate", "").replace("create", "").replace("interactive video", "").replace("h5p", "").strip()
+        if not topic:
+            topic = "the provided materials"
+            
+        video_template = f"""
+I've generated an Interactive Video template about {topic}. Here's how to create it in H5P:
+
+1. First, you'll need to select or upload a video about {topic}
+2. Then, add interactive elements at these key points:
+
+   - 00:30 - Add a multiple choice question: "What is the main concept introduced so far?"
+   - 01:30 - Add a summary point with key information
+   - 02:45 - Add a fill-in-the-blanks question about the key terminology
+   - At the end - Add a summary task with 3-5 key takeaways
+
+Unfortunately, I can't generate the complete JSON for interactive videos as they require reference to your specific video file. However, you can:
+
+1. In Moodle, create a new H5P activity
+2. Select "Interactive Video" as the content type
+3. Upload your video
+4. Add the interactive elements at the timestamps suggested above
+5. Customize the questions and content based on your specific needs
+
+This structure works well for educational videos between 3-10 minutes long.
+"""
+        return video_template
+    
+    def _generate_course_presentation(self, query: str, contexts: List[str]) -> str:
+        """Generate H5P course presentation template"""
+        topic = query.replace("generate", "").replace("create", "").replace("presentation", "").replace("slides", "").replace("h5p", "").strip()
+        if not topic:
+            topic = "the provided materials"
+            
+        presentation_template = f"""
+I've generated a Course Presentation template about {topic}. Here's how to create it in H5P:
+
+Suggested slide structure for a presentation on {topic}:
+
+1. Title Slide: "{topic} - Key Concepts"
+2. Introduction: Brief overview of {topic}
+3. Key Concept 1: [First major point about the topic]
+   - Add an interactive element: Multiple choice question
+4. Key Concept 2: [Second major point]
+   - Add a drag and drop exercise matching terms to definitions
+5. Key Concept 3: [Third major point]
+   - Add fill-in-the-blanks exercise
+6. Summary: Review of key points
+   - Add a summary task with drag-and-drop elements
+7. Final Assessment: 2-3 questions covering the material
+
+To create this in Moodle:
+1. Create a new H5P activity
+2. Select "Course Presentation" as the content type
+3. Create each slide following the structure above
+4. Add text, images, and interactive elements to each slide
+5. Save and publish the presentation
+
+This template is designed for a 7-10 minute presentation with interactive elements to maintain engagement.
+"""
+        return presentation_template
     
     def clear_cache(self):
         """Clear the embedding cache if it exists"""
         if self._embedding_cache is not None:
             self._embedding_cache.clear()
+            logger.info("Embedding cache cleared")
     
     def _is_greeting(self, text: str) -> bool:
         """
@@ -250,94 +736,3 @@ class RAGEngine:
                 return not any(word in text for word in question_words)
         
         return False
-    
-    def _create_prompt(self, query: str, doc_contexts: List[str], conv_context: Optional[List[Dict[str, str]]] = None, 
-                      course: Optional[str] = None, source_indicator: str = "") -> str:
-        """
-        Create a prompt using the query, retrieved contexts, and conversation history
-        
-        Args:
-            query: The user's question
-            doc_contexts: List of relevant document contexts
-            conv_context: Optional list of previous conversation messages
-            course: Optional course identifier for context
-            source_indicator: Optional indicator of source type (video/document)
-        """
-        # Format document contexts (silently used but not mentioned)
-        # Limit the number of contexts to reduce token usage
-        if len(doc_contexts) > 2:
-            doc_contexts = doc_contexts[:2]
-            
-        doc_context_str = "\n\n".join([f"{context}" for i, context in enumerate(doc_contexts)])
-        
-        # Format conversation history if available - limit to last 2 messages to save memory
-        conv_history = ""
-        if conv_context:
-            # Only keep most recent messages - reduced from 3 to 2
-            recent_messages = conv_context[-2:] if len(conv_context) > 2 else conv_context
-            conv_history = "\nPrevious conversation:\n"
-            for msg in recent_messages:
-                role = msg["role"].capitalize() if "role" in msg else "Unknown"
-                # Truncate content to reduce token usage - reduced from 200 to 150
-                content = msg.get("content", "")
-                if content and len(content) > 150:
-                    content = content[:150] + "..."
-                conv_history += f"{role}: {content}\n"
-        
-        # Add course context if available
-        course_context = f"You are answering questions specifically about the '{course}' course. " if course else ""
-        
-        # Check if the query seems to warrant a detailed response
-        is_complex_query = any(word in query.lower() for word in [
-            "explain", "describe", "how", "why", "what is", "what are", "difference", "compare", "list", "steps", "process"
-        ])
-        
-        # Customized response formatting guidance based on query type
-        response_format_guidance = """
-        Response format:
-        - For complex topics, use a structured approach with clear explanations
-        - Use bullet points or numbered lists when explaining multiple concepts, steps, or examples
-        - Include examples where helpful
-        - Break down complex ideas into digestible parts
-        - Be conversational but thorough
-        - Provide comprehensive answers without being overly verbose
-        """
-        
-        # Simplified prompt to save tokens
-        prompt = f"""
-        You are a dedicated Learning Assistant, committed to helping students excel in their educational journey. {course_context}{source_indicator}Your purpose is to:
-
-        1. Guide students through their academic challenges
-        2. Explain concepts clearly and comprehensively
-
-        {response_format_guidance}
-
-        STRICT LIMITATIONS:
-        - You can ONLY answer questions directly related to the provided context materials
-        - NEVER invent or hallucinate information not present in the context materials
-        - If a question is about videos and you don't have video context, say: "I don't have any video content that answers your question."
-        - If a question is about politics, sports, entertainment, current events, or anything outside your provided context, respond with: "I'm sorry, I can only assist with questions related to your learning materials. Please ask me something about your course content."
-        - NEVER create or fabricate information that is not in your context
-        - DO NOT answer general knowledge questions that aren't covered in your learning materials
-        - If you don't have enough information to answer a question based on your context, politely say: "I don't have enough information to answer that question based on your learning materials."
-        - NEVER mention what materials or knowledge you have access to
-        - NEVER list topics you can help with - let the student ask specific questions
-        - If asked about the course and you don't have specific course information, say: "I don't have detailed information about this course yet. Please check with your instructor for the course syllabus and requirements."
-        - Stay strictly focused on the retrieved context content and don't make up details
-
-        Core principles:
-        - Focus exclusively on educational content from your context
-        - Use clear, student-friendly language
-        - Keep responses focused on ONLY what the student is asking about
-        - Never make up information about courses you don't have data for
-        - Provide appropriately detailed responses with examples and structured formatting when helpful
-
-        {conv_history}
-        Student: {query}
-
-        Assistant: 
-
-        [Use this knowledge to help without explicitly mentioning you're drawing from specific materials: {doc_context_str}]
-        """
-        
-        return prompt

@@ -11,7 +11,7 @@ class PineconeClient:
         if index_name not in self.pc.list_indexes().names():
             self.pc.create_index(
                 name=index_name,
-                dimension=768,  # Default dimension for embeddings
+                dimension=1536,  # Default dimension for OpenAI text-embedding-small-3
                 metric='cosine'
             )
         
