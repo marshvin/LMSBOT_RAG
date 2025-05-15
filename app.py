@@ -115,11 +115,26 @@ def get_component(name, components):
                 openai_api_key=OPENAI_API_KEY,  # OpenAI API key
                 primary_llm=primary_llm  # Which API to use primarily
             )
+        elif name == "moodle_client":
+            # Initialize Moodle client if credentials are available
+            moodle_url = os.getenv("MOODLE_URL")
+            moodle_token = os.getenv("MOODLE_TOKEN")
+            
+            if not moodle_url or not moodle_token:
+                logger.warning("Moodle integration not configured. Set MOODLE_URL and MOODLE_TOKEN in your .env file.")
+                return None
+                
+            from rag_components.moodle_client import MoodleClient
+            components[name] = MoodleClient(
+                base_url=moodle_url,
+                token=moodle_token
+            )
+            logger.info(f"Initialized Moodle client for {moodle_url}")
     
     return components[name]
 
 # Create and configure app
-app = Flask(__name__)
+app = Flask(__name__, static_folder='static')
 
 # Set a smaller size for JSON responses
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB max upload
@@ -142,6 +157,7 @@ from routes.document_routes import document_bp
 from routes.query_routes import query_bp
 from routes.youtube_routes import youtube_bp
 from routes.h5p_routes import h5p_bp  # Import the new H5P routes
+from flask import send_from_directory
 
 # Add middleware to provide lazy component loading
 @app.before_request
@@ -157,6 +173,11 @@ app.register_blueprint(h5p_bp)  # Register the H5P blueprint
 
 # Add components to app context
 app.config['COMPONENTS'] = components
+
+# Add route for chatbot interface
+@app.route('/chatbot')
+def chatbot():
+    return send_from_directory('static', 'chatbot.html')
 
 # This simplifies deployment - the app can be directly run by Render
 if __name__ == '__main__':
