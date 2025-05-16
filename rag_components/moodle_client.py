@@ -29,8 +29,9 @@ class MoodleClient:
         logger.info(f"Initialized Moodle client for {self.base_url}")
         logger.info(f"Webservice URL: {self.webservice_url}")
         
-        # Test connection on initialization
+        # Test connection and validate token
         self._test_connection()
+        self._validate_token()
     
     def _test_connection(self):
         """Test the connection to Moodle"""
@@ -42,6 +43,25 @@ class MoodleClient:
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to connect to Moodle server at {self.base_url}: {str(e)}")
             raise ConnectionError(f"Could not connect to Moodle server at {self.base_url}. Please verify the server is running and the URL is correct.")
+    
+    def _validate_token(self):
+        """Validate the token by making a test request"""
+        try:
+            # Try to get site info as a token validation test
+            response = self._make_request('core_webservice_get_site_info')
+            logger.info("Token validation successful")
+            return response
+        except Exception as e:
+            error_msg = str(e)
+            if "Invalid token" in error_msg:
+                logger.error("Invalid token. Please check if the token is correct and has not expired.")
+                raise ValueError("Invalid Moodle token. Please verify the token is correct and has not expired.")
+            elif "Access control exception" in error_msg:
+                logger.error("Token does not have required permissions. Please check token capabilities.")
+                raise PermissionError("Token does not have required permissions. Please check token capabilities.")
+            else:
+                logger.error(f"Error validating token: {error_msg}")
+                raise
     
     def _make_request(self, function: str, params: Dict[str, Any] = None) -> Dict:
         """Make a request to the Moodle API"""
@@ -59,7 +79,19 @@ class MoodleClient:
             logger.info(f"Making request to {self.webservice_url} with function {function}")
             response = requests.post(self.webservice_url, params)
             response.raise_for_status()
-            return response.json()
+            
+            # Check for Moodle-specific errors in the response
+            result = response.json()
+            if isinstance(result, dict) and 'exception' in result:
+                error_msg = result.get('message', 'Unknown error')
+                if 'Invalid token' in error_msg:
+                    raise ValueError(f"Invalid token: {error_msg}")
+                elif 'Access control exception' in error_msg:
+                    raise PermissionError(f"Permission denied: {error_msg}")
+                else:
+                    raise Exception(f"Moodle error: {error_msg}")
+                    
+            return result
         except requests.exceptions.RequestException as e:
             logger.error(f"Error making request to Moodle API: {str(e)}")
             if "Connection refused" in str(e):
