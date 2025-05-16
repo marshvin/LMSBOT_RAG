@@ -3,6 +3,7 @@ import json
 import logging
 from typing import Optional, Dict, Any
 import os
+from urllib.parse import urljoin
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, 
@@ -18,11 +19,29 @@ class MoodleClient:
             base_url: The base URL of the Moodle instance (e.g., https://moodle.example.com)
             token: The API token for authentication
         """
+        # Ensure base_url doesn't end with a slash
         self.base_url = base_url.rstrip('/')
         self.token = token
-        self.webservice_url = f"{self.base_url}/webservice/rest/server.php"
         
-        logger.info(f"Initialized Moodle client for {base_url}")
+        # Construct the webservice URL properly
+        self.webservice_url = urljoin(self.base_url, '/webservice/rest/server.php')
+        
+        logger.info(f"Initialized Moodle client for {self.base_url}")
+        logger.info(f"Webservice URL: {self.webservice_url}")
+        
+        # Test connection on initialization
+        self._test_connection()
+    
+    def _test_connection(self):
+        """Test the connection to Moodle"""
+        try:
+            # Make a simple request to check connection
+            response = requests.get(self.base_url)
+            response.raise_for_status()
+            logger.info("Successfully connected to Moodle server")
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to connect to Moodle server at {self.base_url}: {str(e)}")
+            raise ConnectionError(f"Could not connect to Moodle server at {self.base_url}. Please verify the server is running and the URL is correct.")
     
     def _make_request(self, function: str, params: Dict[str, Any] = None) -> Dict:
         """Make a request to the Moodle API"""
@@ -37,11 +56,14 @@ class MoodleClient:
         })
         
         try:
+            logger.info(f"Making request to {self.webservice_url} with function {function}")
             response = requests.post(self.webservice_url, params)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
             logger.error(f"Error making request to Moodle API: {str(e)}")
+            if "Connection refused" in str(e):
+                logger.error("Connection refused. Please check if Moodle server is running and web services are enabled.")
             raise
     
     def get_courses(self) -> Dict:
