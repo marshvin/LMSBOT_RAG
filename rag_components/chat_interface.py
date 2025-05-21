@@ -3,6 +3,7 @@ import re
 import json
 import requests
 import os
+import time
 from typing import Dict, List, Optional, Any
 
 class ChatInterface:
@@ -222,66 +223,23 @@ class ChatInterface:
                 query = f"Create a {difficulty} {state['content_type']} about {state['topic']}"
             
             # Generate H5P content
-            h5p_content = self.rag_engine.generate_h5p_content(query, None)
+            h5p_content = self.rag_engine.generate_h5p_content(query)
             
             # Store the result
             state["result"] = h5p_content
             state["stage"] = "complete"
             
-            # If Moodle integration is available, try to publish
-            if self._has_moodle_config():
-                try:
-                    moodle_result = self._publish_to_moodle(query, state)
-                    if moodle_result.get("success"):
-                        activity_id = moodle_result.get("activity_id", "N/A")
-                        download_url = moodle_result.get("download_url", "#")
-                        return (f"Your {state['content_type']} has been created successfully! You can:\n"
-                               f"- View in course: Activity ID {activity_id}\n"
-                               f"- Download: {download_url}\n"
-                               f"Would you like to make any changes to this content?")
-                except Exception as e:
-                    # Log the error but continue with the regular response
-                    print(f"Error publishing to Moodle: {str(e)}")
+            # Generate a download URL
+            timestamp = int(time.time())
+            filename = f"{state['content_type']}_{timestamp}.h5p"
+            download_url = f"/api/h5p/download/{filename}"
             
-            # Return a generic success message if Moodle publishing wasn't done
             return (f"I've generated your {state['content_type']} about {state['topic']}. Here's what it includes:\n\n"
                    f"{h5p_content[:300]}...\n\n"
+                   f"You can download the H5P content at: {download_url}\n\n"
                    f"Would you like to make any changes to this content?")
             
         except Exception as e:
             # Reset conversation state on error
             self.h5p_conversation_state = None
             return f"I'm sorry, I encountered an error while generating your H5P content: {str(e)}"
-    
-    def _has_moodle_config(self) -> bool:
-        """Check if Moodle configuration is available"""
-        return bool(os.getenv("MOODLE_URL") and os.getenv("MOODLE_TOKEN"))
-    
-    def _publish_to_moodle(self, query: str, state: Dict) -> Dict:
-        """Publish H5P content to Moodle using the API"""
-        moodle_url = os.getenv("MOODLE_URL", "")
-        h5p_endpoint = f"{moodle_url}/webservice/rest/server.php"
-        
-        # Prepare data for the API request - using 'query' for consistency
-        data = {
-            "query": query,
-            "content_type": state["content_type"],
-            "course": "demo",  # This should be dynamically set or retrieved
-            "name": state["name"],
-            "intro": state["description"],
-            "parameters": json.dumps(state["parameters"])
-        }
-        
-        # Make API request
-        # This is a mock implementation - in a real system, you would call your Moodle API
-        # response = requests.post(h5p_endpoint, json=data)
-        # return response.json()
-        
-        # For now, return a mock success response
-        return {
-            "success": True,
-            "message": "H5P content generated successfully.",
-            "activity_id": 456,
-            "download_url": f"{moodle_url}/pluginfile.php/123/mod_h5pactivity/package/{state['content_type']}_{456}.h5p",
-            "content_info": f"Generated {state['content_type']} about {state['topic']}"
-        }

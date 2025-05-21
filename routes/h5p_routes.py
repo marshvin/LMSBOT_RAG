@@ -1,5 +1,5 @@
 # routes/h5p_routes.py
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, request, jsonify, current_app, send_file
 import time
 import gc
 import os
@@ -24,8 +24,13 @@ def generate_h5p():
             }), 400
         
         query_text = data['query']
-        course = data.get('course')
         content_type = data.get('content_type', 'quiz')  # Default to quiz if not specified
+        course = data.get('course')  # Get course information
+        
+        if not course:
+            return jsonify({
+                "error": "Course information is required"
+            }), 400
         
         # Input validation
         if not query_text or len(query_text.strip()) == 0:
@@ -43,28 +48,146 @@ def generate_h5p():
         if content_type not in query_text.lower():
             query_text = f"generate {content_type} about {query_text}"
         
+        print(f"Generating H5P content for query: {query_text}")
+        
         # Generate H5P content
-        h5p_content = rag_engine.generate_h5p_content(query_text, course)
+        try:
+            h5p_content = rag_engine.generate_h5p_content(query_text, course)
+            print(f"Generated H5P content: {h5p_content[:200]}...")  # Print first 200 chars
+        except Exception as e:
+            print(f"Error generating H5P content: {str(e)}")
+            return jsonify({
+                "error": f"Failed to generate H5P content: {str(e)}"
+            }), 500
         
-        # Force garbage collection
-        gc.collect()
+        # Extract JSON content from the response
+        try:
+            # Find JSON content between ```json and ```
+            json_start = h5p_content.find('```json')
+            if json_start == -1:
+                print("No ```json marker found in content")
+                return jsonify({
+                    "error": "Invalid H5P content format: No JSON content found"
+                }), 500
+                
+            json_start += 7  # Length of ```json
+            json_end = h5p_content.find('```', json_start)
+            
+            if json_end == -1:
+                print("No closing ``` marker found in content")
+                return jsonify({
+                    "error": "Invalid H5P content format: No closing JSON marker"
+                }), 500
+            
+            json_content = h5p_content[json_start:json_end].strip()
+            print(f"Extracted JSON content: {json_content[:200]}...")  # Print first 200 chars
+            
+            quiz_data = json.loads(json_content)
+        except json.JSONDecodeError as e:
+            print(f"JSON parsing error: {str(e)}")
+            return jsonify({
+                "error": f"Failed to parse H5P JSON content: {str(e)}"
+            }), 500
+        except Exception as e:
+            print(f"Error extracting JSON content: {str(e)}")
+            return jsonify({
+                "error": f"Failed to extract H5P content: {str(e)}"
+            }), 500
         
-        result = {
-            "query": query_text,
-            "h5p_content": h5p_content,
-            "content_type": content_type
-        }
+        # Generate a unique filename
+        timestamp = int(time.time())
+        filename = f"{content_type}_{timestamp}.h5p"
         
-        if course:
-            result["course"] = course
+        # Create temp directory if it doesn't exist
+        temp_dir = os.path.join(current_app.root_path, 'temp')
+        os.makedirs(temp_dir, exist_ok=True)
         
-        return jsonify(result)
+        # Create H5P package structure
+        package_dir = os.path.join(temp_dir, f"package_{timestamp}")
+        os.makedirs(package_dir, exist_ok=True)
+        
+        # Create content directory
+        content_dir = os.path.join(package_dir, 'content')
+        os.makedirs(content_dir, exist_ok=True)
+        
+        try:
+            # Write content.json
+            with open(os.path.join(content_dir, 'content.json'), 'w', encoding='utf-8') as f:
+                json.dump(quiz_data, f, indent=2)
+            
+            # Create h5p.json
+            h5p_json = {
+                "title": quiz_data.get('title', 'Quiz'),
+                "language": "en",
+                "mainLibrary": "H5P.Quiz",
+                "embedTypes": ["div"],
+                "license": "U",
+                "authors": [{"name": "RAG System", "role": "Author"}],
+                "preloadedDependencies": [
+                    {
+                        "machineName": "H5P.Quiz",
+                        "majorVersion": "1",
+                        "minorVersion": "0"
+                    }
+                ]
+            }
+            
+            with open(os.path.join(package_dir, 'h5p.json'), 'w', encoding='utf-8') as f:
+                json.dump(h5p_json, f, indent=2)
+            
+            # Create the H5P package (zip file)
+            import zipfile
+            zip_path = os.path.join(temp_dir, filename)
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for root, dirs, files in os.walk(package_dir):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        arcname = os.path.relpath(file_path, package_dir)
+                        zipf.write(file_path, arcname)
+            
+            print(f"Created H5P package at: {zip_path}")
+            
+            # Clean up package directory
+            import shutil
+            shutil.rmtree(package_dir)
+            
+            # Force garbage collection
+            gc.collect()
+            
+            # Generate full URL for download
+            download_url = f"{request.host_url}api/h5p/download/{filename}"
+            
+            result = {
+                "query": query_text,
+                "h5p_content": h5p_content,
+                "content_type": content_type,
+                "course": course,
+                "download_url": download_url,
+                "filename": filename
+            }
+            
+            return jsonify(result)
+            
+        except Exception as e:
+            print(f"Error creating H5P package: {str(e)}")
+            # Clean up any temporary files
+            try:
+                if os.path.exists(package_dir):
+                    shutil.rmtree(package_dir)
+                if os.path.exists(zip_path):
+                    os.remove(zip_path)
+            except:
+                pass
+            return jsonify({
+                "error": f"Failed to create H5P package: {str(e)}"
+            }), 500
+            
     except Exception as e:
-        print(f"Error generating H5P content: {str(e)}")
+        print(f"Unexpected error in generate_h5p: {str(e)}")
         return jsonify({
             "query": data.get('query', ''),
             "response": "I'm sorry, I encountered an error while generating H5P content. Please try again.",
-            "error": "Internal server error"
+            "error": f"Internal server error: {str(e)}"
         }), 500
 
 @h5p_bp.route('/structured-generate', methods=['POST'])
@@ -273,11 +396,35 @@ def get_h5p_types():
 
 @h5p_bp.route('/download/<filename>', methods=['GET'])
 def download_h5p(filename):
-    """Mock endpoint to download H5P file (would be implemented in production)"""
-    return jsonify({
-        "message": "This is a mock download endpoint. In production, this would serve the actual H5P file.",
-        "filename": filename
-    })
+    """Download H5P file"""
+    try:
+        # Get the file path
+        temp_dir = os.path.join(current_app.root_path, 'temp')
+        file_path = os.path.join(temp_dir, filename)
+        
+        if not os.path.exists(file_path):
+            return jsonify({
+                "error": "File not found"
+            }), 404
+        
+        # Send the file
+        return send_file(
+            file_path,
+            as_attachment=True,
+            download_name=filename,
+            mimetype='application/zip'
+        )
+    except Exception as e:
+        return jsonify({
+            "error": f"Error downloading H5P file: {str(e)}"
+        }), 500
+    finally:
+        # Clean up the temporary file after sending
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except:
+            pass  # Ignore cleanup errors
 
 def _generate_content_info(content_type, prompt, parameters):
     """Generate a description of the H5P content based on parameters"""

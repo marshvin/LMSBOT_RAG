@@ -6,6 +6,7 @@ import re
 import gc
 import logging
 import threading
+import json
 
 # Add imports for fallback options - make OpenAI import conditional
 import os
@@ -453,73 +454,88 @@ class RAGEngine:
     
     def generate_h5p_content(self, query: str, course: Optional[str] = None) -> str:
         """
-        Generate H5P content based on the query and course materials
+        Generate H5P content based on the query and course context
         
         Args:
             query: The user's request for H5P content
-            course: Optional course to generate content for
+            course: Optional course identifier for context
         """
-        # First, extract what type of H5P content is requested
-        content_type = self._determine_h5p_content_type(query)
-        
-        # If course is provided, get relevant content for that course
-        if course:
-            # Generate embedding for a general course query to get course materials
-            course_query = f"important concepts in {course}"
-            course_embedding = self.embedding_service.get_embedding(course_query)
-            
-            # Query vector store for course materials
-            results = self.vector_store.query(
-                vector=course_embedding,
-                top_k=3,  # Reduced from 5
-                filter_params={"course": course}
-            )
-            
-            # Extract contexts for content generation
-            contexts = []
-            for match in results.get('matches', []):
-                if 'metadata' in match and 'text' in match['metadata']:
-                    text = match['metadata']['text']
-                    # Limit text length to reduce token usage
-                    if len(text) > 300:  # Reduced from default
-                        text = text[:300] + "..."
-                    contexts.append(text)
-            
-            # If no contexts found, return a message
-            if not contexts:
-                return f"I couldn't find any content for the {course} course to generate H5P materials. Please make sure the course has materials added."
-        else:
-            contexts = []  # No course-specific context
-        
-        # Generate H5P content based on type and contexts
         try:
-            # Implement rate limiting for API calls
-            with self._request_lock:
-                current_time = time.time()
-                time_since_last_request = current_time - self._last_request_time
-                
-                if time_since_last_request < self._request_spacing:
-                    # Wait if needed to avoid hitting rate limits
-                    sleep_time = max(0, self._request_spacing - time_since_last_request)
-                    logger.info(f"Rate limiting: sleeping for {sleep_time:.2f} seconds")
-                    time.sleep(sleep_time)
-                
-                # Update last request time
-                self._last_request_time = time.time()
+            # First, extract what type of H5P content is requested
+            content_type = self._determine_h5p_content_type(query)
             
-            if content_type == "quiz":
-                h5p_content = self._generate_quiz(query, contexts)
-            elif content_type == "interactive_video":
-                h5p_content = self._generate_interactive_video(query, contexts)
-            elif content_type == "course_presentation":
-                h5p_content = self._generate_course_presentation(query, contexts)
-            else:
-                h5p_content = self._generate_quiz(query, contexts)  # Default to quiz
+            # Get relevant content from the course
+            if course:
+                # Generate embedding for the query
+                query_embedding = self.embedding_service.get_embedding(query)
                 
+                # Query vector store with course filter
+                results = self.vector_store.query(
+                    vector=query_embedding,
+                    top_k=3,  # Get more context for H5P generation
+                    filter_params={"course": course}
+                )
+                
+                # Extract relevant content
+                doc_contexts = [match.get('metadata', {}).get('text', '') for match in results.get('matches', [])]
+                
+                # Create a prompt for the LLM
+                prompt = f"""Generate an H5P {content_type} about {query} for the course '{course}'.
+                Use the following course content as reference:
+                {' '.join(doc_contexts)}
+                
+                The content should be in H5P JSON format, wrapped in ```json and ``` markers.
+                Make sure the content is relevant to the course material and includes proper questions/answers.
+                """
+            else:
+                prompt = f"""Generate an H5P {content_type} about {query}.
+                The content should be in H5P JSON format, wrapped in ```json and ``` markers.
+                Make sure the content is educational and includes proper questions/answers.
+                """
+            
+            # Generate content using the primary LLM
+            if self.primary_llm == "gemini" and self.gemini_available:
+                h5p_content = self._generate_gemini_response(prompt)
+            elif self.primary_llm == "openai" and self.openai_available:
+                h5p_content = self._generate_openai_response(prompt)
+            else:
+                # Fallback to basic template
+                if content_type == "quiz":
+                    h5p_content = self._generate_quiz(query)
+                elif content_type == "interactive_video":
+                    h5p_content = self._generate_interactive_video(query)
+                elif content_type == "course_presentation":
+                    h5p_content = self._generate_course_presentation(query)
+                else:
+                    h5p_content = self._generate_quiz(query)
+            
+            # Ensure the content is properly formatted with JSON markers
+            if "```json" not in h5p_content:
+                h5p_content = f"```json\n{h5p_content}\n```"
+            
             return h5p_content
+            
         except Exception as e:
             logger.error(f"Error generating H5P content: {str(e)}")
-            return "I encountered an error while generating H5P content. Please try again later or with a different request."
+            # Return a basic template as fallback
+            return f"""```json
+{{
+    "title": "Quiz on {query}",
+    "questions": [
+        {{
+            "question": "What is the main concept of {query}?",
+            "type": "multichoice",
+            "options": [
+                "Option A - First key concept",
+                "Option B - Alternative concept",
+                "Option C - Related but incorrect concept",
+                "Option D - Distractor"
+            ],
+            "correctAnswer": "Option A - First key concept"
+        }}
+    ]
+}}
+```"""
     
     def _create_prompt(self, query: str, doc_contexts: List[str], conv_context: Optional[List[Dict[str, str]]] = None, 
                       course: Optional[str] = None, source_indicator: str = "") -> str:
@@ -590,120 +606,133 @@ class RAGEngine:
         else:
             return "quiz"  # Default to quiz
     
-    def _generate_quiz(self, query: str, contexts: List[str]) -> str:
-        """Generate an H5P quiz based on available contexts"""
-        # Without direct LLM access, create a simple quiz template
-        
+    def _generate_quiz(self, query: str) -> str:
+        """Generate an H5P quiz"""
         topic = query.replace("generate quiz", "").replace("create quiz", "").replace("h5p", "").strip()
         if not topic:
             topic = "the provided materials"
             
-        quiz_template = f"""
-I've generated a quiz about {topic}. Here's the H5P Quiz content in JSON format that you can import:
-
-```json
-{{
-  "title": "Quiz on {topic}",
-  "questions": [
-    {{
-      "question": "What is the main concept of {topic}?",
-      "type": "multichoice",
-      "options": [
-        "Option A - First key concept",
-        "Option B - Alternative concept",
-        "Option C - Related but incorrect concept",
-        "Option D - Distractor"
-      ],
-      "correctAnswer": "Option A - First key concept"
-    }},
-    {{
-      "question": "Which of the following is true about {topic}?",
-      "type": "multichoice",
-      "options": [
-        "Option A - True statement about the topic",
-        "Option B - False statement",
-        "Option C - Partially true statement",
-        "Option D - Unrelated statement"
-      ],
-      "correctAnswer": "Option A - True statement about the topic"
-    }}
-  ]
-}}
-```
-
-To use this in Moodle:
-1. Copy this JSON content
-2. In Moodle, create a new H5P activity
-3. Choose the "Import" option
-4. Paste this content into the JSON import field
-5. Customize the questions and answers as needed
-
-Note: This is a template quiz. You should review and modify the questions/answers to ensure they accurately reflect your course content.
-"""
-        return quiz_template
+        quiz_template = {
+            "title": f"Quiz on {topic}",
+            "questions": [
+                {
+                    "question": f"What is the main concept of {topic}?",
+                    "type": "multichoice",
+                    "options": [
+                        "Option A - First key concept",
+                        "Option B - Alternative concept",
+                        "Option C - Related but incorrect concept",
+                        "Option D - Distractor"
+                    ],
+                    "correctAnswer": "Option A - First key concept"
+                },
+                {
+                    "question": f"Which of the following is true about {topic}?",
+                    "type": "multichoice",
+                    "options": [
+                        "Option A - True statement about the topic",
+                        "Option B - False statement",
+                        "Option C - Partially true statement",
+                        "Option D - Unrelated statement"
+                    ],
+                    "correctAnswer": "Option A - True statement about the topic"
+                }
+            ]
+        }
+        
+        return json.dumps(quiz_template, indent=2)
     
-    def _generate_interactive_video(self, query: str, contexts: List[str]) -> str:
+    def _generate_interactive_video(self, query: str) -> str:
         """Generate H5P interactive video template"""
         topic = query.replace("generate", "").replace("create", "").replace("interactive video", "").replace("h5p", "").strip()
         if not topic:
             topic = "the provided materials"
             
-        video_template = f"""
-I've generated an Interactive Video template about {topic}. Here's how to create it in H5P:
-
-1. First, you'll need to select or upload a video about {topic}
-2. Then, add interactive elements at these key points:
-
-   - 00:30 - Add a multiple choice question: "What is the main concept introduced so far?"
-   - 01:30 - Add a summary point with key information
-   - 02:45 - Add a fill-in-the-blanks question about the key terminology
-   - At the end - Add a summary task with 3-5 key takeaways
-
-Unfortunately, I can't generate the complete JSON for interactive videos as they require reference to your specific video file. However, you can:
-
-1. In Moodle, create a new H5P activity
-2. Select "Interactive Video" as the content type
-3. Upload your video
-4. Add the interactive elements at the timestamps suggested above
-5. Customize the questions and content based on your specific needs
-
-This structure works well for educational videos between 3-10 minutes long.
-"""
-        return video_template
+        video_template = {
+            "title": f"Interactive Video about {topic}",
+            "video": {
+                "source": "YOUR_VIDEO_URL_HERE",
+                "interactions": [
+                    {
+                        "time": "00:30",
+                        "type": "multichoice",
+                        "question": "What is the main concept introduced so far?",
+                        "options": [
+                            "Option A",
+                            "Option B",
+                            "Option C",
+                            "Option D"
+                        ],
+                        "correctAnswer": "Option A"
+                    },
+                    {
+                        "time": "01:30",
+                        "type": "summary",
+                        "content": "Key points covered so far"
+                    },
+                    {
+                        "time": "02:45",
+                        "type": "fill-in-blanks",
+                        "question": "Complete the sentence about key terminology",
+                        "text": "The main concept of [blank] is important because..."
+                    }
+                ]
+            }
+        }
+        
+        return json.dumps(video_template, indent=2)
     
-    def _generate_course_presentation(self, query: str, contexts: List[str]) -> str:
+    def _generate_course_presentation(self, query: str) -> str:
         """Generate H5P course presentation template"""
         topic = query.replace("generate", "").replace("create", "").replace("presentation", "").replace("slides", "").replace("h5p", "").strip()
         if not topic:
             topic = "the provided materials"
             
-        presentation_template = f"""
-I've generated a Course Presentation template about {topic}. Here's how to create it in H5P:
-
-Suggested slide structure for a presentation on {topic}:
-
-1. Title Slide: "{topic} - Key Concepts"
-2. Introduction: Brief overview of {topic}
-3. Key Concept 1: [First major point about the topic]
-   - Add an interactive element: Multiple choice question
-4. Key Concept 2: [Second major point]
-   - Add a drag and drop exercise matching terms to definitions
-5. Key Concept 3: [Third major point]
-   - Add fill-in-the-blanks exercise
-6. Summary: Review of key points
-   - Add a summary task with drag-and-drop elements
-7. Final Assessment: 2-3 questions covering the material
-
-To create this in Moodle:
-1. Create a new H5P activity
-2. Select "Course Presentation" as the content type
-3. Create each slide following the structure above
-4. Add text, images, and interactive elements to each slide
-5. Save and publish the presentation
-
-This template is designed for a 7-10 minute presentation with interactive elements to maintain engagement.
-"""
-        return presentation_template
+        presentation_template = {
+            "title": f"Course Presentation: {topic}",
+            "slides": [
+                {
+                    "title": f"{topic} - Key Concepts",
+                    "type": "title"
+                },
+                {
+                    "title": "Introduction",
+                    "content": f"Brief overview of {topic}",
+                    "type": "content"
+                },
+                {
+                    "title": "Key Concept 1",
+                    "content": "First major point about the topic",
+                    "type": "interactive",
+                    "interaction": {
+                        "type": "multichoice",
+                        "question": "What is the first key concept?",
+                        "options": ["Option A", "Option B", "Option C"],
+                        "correctAnswer": "Option A"
+                    }
+                },
+                {
+                    "title": "Key Concept 2",
+                    "content": "Second major point",
+                    "type": "interactive",
+                    "interaction": {
+                        "type": "drag-and-drop",
+                        "question": "Match the terms to their definitions",
+                        "items": [
+                            {"term": "Term 1", "definition": "Definition 1"},
+                            {"term": "Term 2", "definition": "Definition 2"}
+                        ]
+                    }
+                },
+                {
+                    "title": "Summary",
+                    "content": "Review of key points",
+                    "type": "summary"
+                }
+            ]
+        }
+        
+        return json.dumps(presentation_template, indent=2)
     
     def clear_cache(self):
         """Clear the embedding cache if it exists"""
