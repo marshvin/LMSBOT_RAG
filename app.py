@@ -17,6 +17,7 @@ logging.basicConfig(level=logging.INFO,
 # Load environment variables
 load_dotenv()
 
+
 # API keys - with fallbacks
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyD4GzXELi3SNSc_ARm1fX_iaF0bh9nTv9g")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # Required for embeddings and optional for LLM
@@ -136,6 +137,18 @@ def get_component(name, components):
 # Create and configure app
 app = Flask(__name__, static_folder='static')
 
+# RDS configuration
+app.config['RDS_CONFIG'] = {
+    'host': os.getenv('RDS_HOST'),
+    'port': int(os.getenv('RDS_PORT', 5432)),
+    'user': os.getenv('RDS_USER'),
+    'password': os.getenv('RDS_PASSWORD'),
+    'dbname': os.getenv('RDS_DB')
+}
+
+# Set LLM config
+app.config['PRIMARY_LLM'] = os.getenv("PRIMARY_LLM", "openai").lower()
+
 # Set a smaller size for JSON responses
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB max upload
 
@@ -156,6 +169,7 @@ from routes.health_routes import health_bp
 from routes.document_routes import document_bp
 from routes.query_routes import query_bp
 from routes.youtube_routes import youtube_bp
+from routes.quiz_route import quiz_bp
 from routes.h5p_routes import h5p_bp  # Import the new H5P routes
 from flask import send_from_directory
 
@@ -169,6 +183,7 @@ app.register_blueprint(health_bp)
 app.register_blueprint(document_bp)
 app.register_blueprint(query_bp)
 app.register_blueprint(youtube_bp)
+app.register_blueprint(quiz_bp)  # Register the H5P blueprint
 app.register_blueprint(h5p_bp)  # Register the H5P blueprint
 
 # Add components to app context

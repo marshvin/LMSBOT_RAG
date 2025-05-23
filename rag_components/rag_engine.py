@@ -1,5 +1,10 @@
 # rag_components/rag_engine.py
 import google.generativeai as genai
+from flask import request
+from flask_cors import CORS
+import psycopg2
+from urllib.parse import urlparse
+
 from typing import List, Dict, Any, Optional
 import time
 import re
@@ -15,6 +20,7 @@ try:
     OPENAI_AVAILABLE = True
 except ImportError:
     OPENAI_AVAILABLE = False
+    
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, 
@@ -451,6 +457,105 @@ class RAGEngine:
         short_context = '. '.join(sentences[:3]) + '.'
         
         return f"{disclaimer}Based on the information I have: {short_context}"
+    
+    # MODULE FOR TESTING THE STUDENT
+    
+    def generate_mcqs(
+        self, 
+        query: str, 
+        course: Optional[str] = None, 
+        context: Optional[List[Dict[str, str]]] = None, 
+        source_filter: Optional[str] = None
+    ):
+        """
+        Generate multiple-choice questions using retrieved context and LLM generation.
+
+        Args:
+            query: User's quiz request/topic
+            course: Optional course filter
+            context: Optional conversation context (not used here)
+            source_filter: Optional source filter (e.g. 'pdf')
+
+        Returns:
+            List of MCQs as dicts with 'question', 'options', 'answer'.
+        """
+        try:
+            # 1. Get embedding for query
+            query_embedding = self.embedding_service.get_embedding(query)
+
+            # 2. Prepare filters for vector search
+            filters = {}
+            if course:
+                filters["course"] = course
+            if source_filter:
+                filters["source"] = source_filter
+
+            # 3. Query vector store for relevant documents
+            results = self.vector_store.query(
+                vector=query_embedding,
+                top_k=3,
+                filter_params=filters if filters else None
+            )
+
+            # 4. Extract and combine context snippets
+            snippets = []
+            for match in results.get('matches', []):
+                text = match.get('metadata', {}).get('text', '')
+                if len(text) > 300:
+                    text = text[:300] + "..."
+                snippets.append(text)
+
+            if not snippets:
+                return [{"question": "No relevant quiz content found.", "options": [], "answer": ""}]
+
+            combined_context = "\n\n".join(snippets)
+
+            # 5. Build strict prompt for the LLM to generate clean JSON MCQs
+            prompt = (
+                "You are an educational assistant. "
+                "Based on the course content below, generate exactly 5 multiple-choice questions (MCQs). "
+                "Each question should have exactly 5 answer options (A to D), and clearly indicate the correct answer. "
+                "Respond only in pure JSON, without explanation or markdown. Use this format:\n\n"
+                "[{\"question\": \"...\", \"options\": [\"A\", \"B\", \"C\", \"D\"], \"answer\": \"C\"}]\n\n"
+                f"Content:\n{combined_context}\n\n"
+                "Begin your JSON array now:"
+            )
+
+            # 6. Rate limit / lock
+            with self._request_lock:
+                now = time.time()
+                elapsed = now - self._last_request_time
+                if elapsed < self._request_spacing:
+                    time.sleep(self._request_spacing - elapsed)
+                self._last_request_time = time.time()
+
+            # 7. Generate LLM response
+            if self.primary_llm == "openai" and self.openai_available:
+                llm_response = self._generate_openai_response(prompt)
+            elif self.primary_llm == "gemini" and self.gemini_available:
+                llm_response = self._generate_gemini_response(prompt)
+            else:
+                return [{"question": "LLM not available to generate quiz.", "options": [], "answer": ""}]
+
+            # 8. Log raw LLM response for debugging
+            logger.debug(f"Raw LLM response: {llm_response}")
+
+            # 9. Try to extract and parse JSON safely
+            import json, re
+            json_string_match = re.search(r'\[\s*{.*?}\s*]', llm_response, re.DOTALL)
+            if json_string_match:
+                mcqs = json.loads(json_string_match.group(0))
+            else:
+                mcqs = [{"question": "Failed to extract valid JSON from LLM response.", "options": [], "answer": ""}]
+
+            return mcqs
+
+        except Exception as e:
+            logger.error(f"Error generating MCQs: {e}")
+            return [{"question": "Error generating quiz content.", "options": [], "answer": ""}]
+
+
+    
     
     def generate_h5p_content(self, query: str, course: Optional[str] = None) -> str:
         """
