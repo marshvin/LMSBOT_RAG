@@ -13,7 +13,14 @@ import os
 
 
 # Initialize Redis client once globally in your app setup
-redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+redis_client = redis.Redis(
+    host='68.183.83.36',
+    port=6379,
+    password='@ShuleLMS*',
+    db=0,
+    decode_responses=True
+)
+
 
 def _make_cache_key(query_text, context):
     # Create a unique key based on query + context to cache results
@@ -127,7 +134,6 @@ query_bp = Blueprint('query', __name__, url_prefix='/api')
 #         }), 500
 
 @query_bp.route('/query', methods=['POST'])
-
 
 def query():
     start_time = time.time()

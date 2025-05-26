@@ -128,6 +128,13 @@ class RAGEngine:
             # Check if query is about generating H5P content
             is_h5p_query = "h5p" in query_lower or "generate quiz" in query_lower or "create assessment" in query_lower
             
+            # Check if the querry is a quiz
+            is_quiz_query = any(keyword in query_lower for keyword in ["quiz", "test me", "assessment", "ask me questions", "mcq" , " querry"])
+            
+            if is_quiz_query:
+                return self.generate_mcqs(query, course, context, source_filter)
+
+            
             # Handle H5P content generation
             if is_h5p_query:
                 return self.generate_h5p_content(query, course)
@@ -458,6 +465,7 @@ class RAGEngine:
         
         return f"{disclaimer}Based on the information I have: {short_context}"
     
+    
     # MODULE FOR TESTING THE STUDENT
     
     def generate_mcqs(
@@ -624,23 +632,23 @@ class RAGEngine:
             logger.error(f"Error generating H5P content: {str(e)}")
             # Return a basic template as fallback
             return f"""```json
-{{
-    "title": "Quiz on {query}",
-    "questions": [
-        {{
-            "question": "What is the main concept of {query}?",
-            "type": "multichoice",
-            "options": [
-                "Option A - First key concept",
-                "Option B - Alternative concept",
-                "Option C - Related but incorrect concept",
-                "Option D - Distractor"
-            ],
-            "correctAnswer": "Option A - First key concept"
-        }}
-    ]
-}}
-```"""
+            {{
+                "title": "Quiz on {query}",
+                "questions": [
+                    {{
+                        "question": "What is the main concept of {query}?",
+                        "type": "multichoice",
+                        "options": [
+                            "Option A - First key concept",
+                            "Option B - Alternative concept",
+                            "Option C - Related but incorrect concept",
+                            "Option D - Distractor"
+                        ],
+                        "correctAnswer": "Option A - First key concept"
+                    }}
+                ]
+            }}
+            ```"""
     
     def _create_prompt(self, query: str, doc_contexts: List[str], conv_context: Optional[List[Dict[str, str]]] = None, 
                       course: Optional[str] = None, source_indicator: str = "") -> str:
