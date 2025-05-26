@@ -110,6 +110,33 @@ class RAGEngine:
         try:
             logger.info(f"Processing query: '{query}' for course: '{course}'")
             
+            # Special handling for "Shule" course - search across all courses
+            if course and course.lower() == "shule":
+                logger.info("Detected 'Shule' course - searching across all courses")
+                # Generate embedding for the query
+                query_embedding = self.embedding_service.get_embedding(query)
+                
+                # Query vector store without course filter to get all relevant courses
+                results = self.vector_store.query(
+                    vector=query_embedding,
+                    top_k=5,  # Increased to get more course variety
+                    filter_params={"source": source_filter} if source_filter else None
+                )
+                
+                # Extract unique courses from results
+                courses_found = set()
+                for match in results.get('matches', []):
+                    if 'metadata' in match and 'course' in match['metadata']:
+                        course_name = match['metadata']['course']
+                        if course_name.lower() != "shule":  # Don't include Shule itself
+                            courses_found.add(course_name)
+                
+                if courses_found:
+                    courses_list = "\n".join([f"- {course}" for course in sorted(courses_found)])
+                    return f"I found the following courses that might interest you:\n\n{courses_list}\n\nWould you like to know more about any specific course?"
+                else:
+                    return "I couldn't find any specific courses related to your query. Could you try rephrasing your question?"
+            
             # Check if the query is specifically about videos
             query_lower = query.lower().strip()
             is_video_query = any(word in query_lower for word in 
