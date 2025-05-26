@@ -614,30 +614,100 @@ class RAGEngine:
             
         quiz_template = {
             "title": f"Quiz on {topic}",
+            "intro": f"Test your knowledge about {topic}",
             "questions": [
                 {
-                    "question": f"What is the main concept of {topic}?",
-                    "type": "multichoice",
-                    "options": [
-                        "Option A - First key concept",
-                        "Option B - Alternative concept",
-                        "Option C - Related but incorrect concept",
-                        "Option D - Distractor"
-                    ],
-                    "correctAnswer": "Option A - First key concept"
-                },
-                {
-                    "question": f"Which of the following is true about {topic}?",
-                    "type": "multichoice",
-                    "options": [
-                        "Option A - True statement about the topic",
-                        "Option B - False statement",
-                        "Option C - Partially true statement",
-                        "Option D - Unrelated statement"
-                    ],
-                    "correctAnswer": "Option A - True statement about the topic"
+                    "library": "H5P.MultiChoice 1.16",
+                    "params": {
+                        "question": f"What is the main concept of {topic}?",
+                        "l10n": {
+                            "scoreBarLabel": "You got :num out of :total points"
+                        },
+                        "answers": [
+                            {
+                                "text": "Option A - First key concept",
+                                "correct": True
+                            },
+                            {
+                                "text": "Option B - Alternative concept",
+                                "correct": False
+                            },
+                            {
+                                "text": "Option C - Related but incorrect concept",
+                                "correct": False
+                            },
+                            {
+                                "text": "Option D - Distractor",
+                                "correct": False
+                            }
+                        ],
+                        "behaviour": {
+                            "enableRetry": True,
+                            "enableSolutionsButton": True,
+                            "enableCheckButton": True,
+                            "type": "auto",
+                            "singleAnswer": True
+                        },
+                        "confirmCheck": {
+                            "header": "Finish ?",
+                            "body": "Are you sure you want to finish ?",
+                            "cancelLabel": "Cancel",
+                            "confirmLabel": "Finish"
+                        },
+                        "confirmRetry": {
+                            "header": "Retry ?",
+                            "body": "Are you sure you want to retry ?",
+                            "cancelLabel": "Cancel",
+                            "confirmLabel": "Confirm"
+                        },
+                        "ui": {
+                            "checkAnswerButton": "Check",
+                            "showSolutionButton": "Show solution",
+                            "tryAgainButton": "Retry"
+                        }
+                    },
+                    "metadata": {
+                        "contentType": "Multiple Choice",
+                        "license": "U",
+                        "title": f"Question about {topic}"
+                    }
                 }
-            ]
+            ],
+            "overallFeedback": [
+                {
+                    "from": 0,
+                    "to": 100
+                }
+            ],
+            "text": "Your results:",
+            "showSolutionsRequiresInput": True,
+            "randomQuestions": False,
+            "endGame": {
+                "showResultPage": True,
+                "showSolutionButton": True,
+                "showRetryButton": True,
+                "noResultMessage": "Finished",
+                "message": "Your result:",
+                "overallFeedback": [
+                    {
+                        "from": 0,
+                        "to": 100
+                    }
+                ],
+                "solutionButtonText": "Show solution",
+                "retryButtonText": "Retry",
+                "finishButtonText": "Finish",
+                "showAnimations": False,
+                "skipButtonText": "Skip video",
+                "previousButtonText": "Previous slide",
+                "nextButtonText": "Next slide",
+                "closeButtonText": "Close",
+                "textualProgress": "Question :num of :total",
+                "templates": {
+                    "solutionListTemplate": "<ul class='h5p-solution-list'>{{content}}</ul>",
+                    "solutionItemTemplate": "<li class='h5p-solution-list-item'>{{content}}</li>"
+                }
+            }
         }
         
         return json.dumps(quiz_template, indent=2)

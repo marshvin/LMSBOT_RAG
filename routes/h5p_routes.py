@@ -5,6 +5,7 @@ import gc
 import os
 import logging
 import json
+import uuid
 
 h5p_bp = Blueprint('h5p', __name__, url_prefix='/api/h5p')
 
@@ -94,8 +95,9 @@ def generate_h5p():
                 "error": f"Failed to extract H5P content: {str(e)}"
             }), 500
         
-        # Generate a unique filename
+        # Generate a unique filename and content ID
         timestamp = int(time.time())
+        content_id = str(uuid.uuid4())
         filename = f"{content_type}_{timestamp}.h5p"
         
         # Create temp directory if it doesn't exist
@@ -111,25 +113,34 @@ def generate_h5p():
         os.makedirs(content_dir, exist_ok=True)
         
         try:
+            # Add content ID to quiz data
+            quiz_data['contentId'] = content_id
+            
             # Write content.json
             with open(os.path.join(content_dir, 'content.json'), 'w', encoding='utf-8') as f:
                 json.dump(quiz_data, f, indent=2)
             
-            # Create h5p.json
+            # Create h5p.json with required fields
             h5p_json = {
                 "title": quiz_data.get('title', 'Quiz'),
                 "language": "en",
-                "mainLibrary": "H5P.Quiz",
+                "mainLibrary": "H5P.QuestionSet",
                 "embedTypes": ["div"],
                 "license": "U",
                 "authors": [{"name": "RAG System", "role": "Author"}],
                 "preloadedDependencies": [
                     {
-                        "machineName": "H5P.Quiz",
+                        "machineName": "H5P.QuestionSet",
+                        "majorVersion": "1",
+                        "minorVersion": "0"
+                    },
+                    {
+                        "machineName": "H5P.MultiChoice",
                         "majorVersion": "1",
                         "minorVersion": "0"
                     }
-                ]
+                ],
+                "contentId": content_id
             }
             
             with open(os.path.join(package_dir, 'h5p.json'), 'w', encoding='utf-8') as f:
@@ -163,7 +174,8 @@ def generate_h5p():
                 "content_type": content_type,
                 "course": course,
                 "download_url": download_url,
-                "filename": filename
+                "filename": filename,
+                "content_id": content_id
             }
             
             return jsonify(result)
